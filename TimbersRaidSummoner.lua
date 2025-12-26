@@ -754,12 +754,16 @@ function TRS:UpdateRaidList()
                 -- Only update level/class if not currently summoning
                 if button.isSummoning then
                     -- Keep the "Summoning..." text
-                    button.levelText:SetText("")
-                    button.classText:SetText("Summoning...")
+                    button.levelText:SetWidth(85)
+                    button.classText:SetWidth(0)
+                    button.levelText:SetText("Summoning...")
+                    button.classText:SetText("")
                     button.levelText:SetTextColor(1, 1, 0)
                     button.classText:SetTextColor(1, 1, 0)
                 else
                     -- Show normal level/class info
+                    button.levelText:SetWidth(25)
+                    button.classText:SetWidth(60)
                     button.levelText:SetText(tostring(member.level or 0))
                     button.classText:SetText(member.class or member.classToken or "")
                     
@@ -1027,12 +1031,16 @@ function TRS:UpdateSummonQueue()
         -- Only update level/class if not currently summoning
         if button.isSummoning then
             -- Keep the "Summoning..." text
-            button.levelText:SetText("")
-            button.classText:SetText("Summoning...")
+            button.levelText:SetWidth(85)
+            button.classText:SetWidth(0)
+            button.levelText:SetText("Summoning...")
+            button.classText:SetText("")
             button.levelText:SetTextColor(1, 1, 0)
             button.classText:SetTextColor(1, 1, 0)
         else
             -- Show normal level/class info
+            button.levelText:SetWidth(25)
+            button.classText:SetWidth(60)
             button.levelText:SetText(tostring(level or 0))
             button.classText:SetText(class or classToken or "")
 
@@ -1077,13 +1085,17 @@ function TRS:UpdateSummoningStateUI(playerName, isSummoning, summonerName)
 
                 if isSummoning then
                     -- Show "Summoning..." text
-                    button.levelText:SetText("")
-                    button.classText:SetText("Summoning...")
+                    button.levelText:SetWidth(85)
+                    button.classText:SetWidth(0)
+                    button.levelText:SetText("Summoning...")
+                    button.classText:SetText("")
                     button.levelText:SetTextColor(1, 1, 0)
                     button.classText:SetTextColor(1, 1, 0)
                 else
                     -- Restore level and class using stored data
                     if button.storedLevel and button.storedClass and button.storedClassToken then
+                        button.levelText:SetWidth(25)
+                        button.classText:SetWidth(60)
                         button.levelText:SetText(tostring(button.storedLevel or 0))
                         button.classText:SetText(button.storedClass or button.storedClassToken or "")
 
@@ -1108,13 +1120,18 @@ function TRS:UpdateSummoningStateUI(playerName, isSummoning, summonerName)
 
                 if isSummoning then
                     -- Show "Summoning..." text
-                    button.levelText:SetText("")
-                    button.classText:SetText("Summoning...")
+                    button.levelText:SetWidth(85)
+                    button.classText:SetWidth(0)
+                    button.levelText:SetText("Summoning...")
+                    button.classText:SetText("")
                     button.levelText:SetTextColor(1, 1, 0)
                     button.classText:SetTextColor(1, 1, 0)
                 else
                     -- Restore level and class using stored data
                     if button.storedLevel and button.storedClass and button.storedClassToken then
+                        button.levelText:SetWidth(25)
+                        button.classText:SetWidth(60)
+
                         button.levelText:SetText(tostring(button.storedLevel or 0))
                         button.classText:SetText(button.storedClass or button.storedClassToken or "")
 
@@ -1152,6 +1169,9 @@ function TRS:ClearSummoningState(playerName)
                 wasCleared = true
                 -- Restore using stored data
                 if button.storedLevel and button.storedClass and button.storedClassToken then
+                    button.levelText:SetWidth(25)
+                    button.classText:SetWidth(60)
+
                     button.levelText:SetText(tostring(button.storedLevel or 0))
                     button.classText:SetText(button.storedClass or button.storedClassToken or "")
 
@@ -1174,6 +1194,9 @@ function TRS:ClearSummoningState(playerName)
                 wasCleared = true
                 -- Restore using stored data
                 if button.storedLevel and button.storedClass and button.storedClassToken then
+                    button.levelText:SetWidth(25)
+                    button.classText:SetWidth(60)
+
                     button.levelText:SetText(tostring(button.storedLevel or 0))
                     button.classText:SetText(button.storedClass or button.storedClassToken or "")
 
@@ -1609,8 +1632,10 @@ function TRS:MergeReceivedQueue()
             for _, button in ipairs(TRS.summonQueueFrame.buttons) do
                 if button.playerName == TRS.receivedSummoningPlayer then
                     button.isSummoning = true
-                    button.levelText:SetText("")
-                    button.classText:SetText("Summoning...")
+                    button.levelText:SetWidth(85)
+                    button.classText:SetWidth(0)
+                    button.levelText:SetText("Summoning...")
+                    button.classText:SetText("")
                     button.levelText:SetTextColor(1, 1, 0)
                     button.classText:SetTextColor(1, 1, 0)
                     break
