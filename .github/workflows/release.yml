@@ -34,12 +34,8 @@ jobs:
           fetch-depth: 0  # gets git history for changelogs
 
       # once cloned, we just run the GitHub Action for the packager project
-      - name: Package and release
-        uses: BigWigsMods/packager@v2
-
-      # another example where we supply additional arguments, this example is specifically to release
-      # for the Burning Crusade Classic version of the game and doesn't upload to WoWInterface
-      - name: Package and release for Burning Crusade Classic
+      # This packages and releases for Classic Era (Season of Discovery)
+      - name: Package and release for Classic Era
         uses: BigWigsMods/packager@v2
         with:
-          args: -g wrath -w 0
+          args: -g classic -w 0
