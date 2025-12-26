@@ -1,0 +1,1847 @@
+-- Timber's Raid Summoner Addon for WoW Classic Era
+-- Main addon file
+
+local addonName = "TimbersRaidSummoner"
+local TRS = {}
+_G[addonName] = TRS
+
+-- Version
+TRS.VERSION = "2025.12.26"
+
+-- Compatibility wrapper for SendAddonMessage
+-- Classic Era has C_ChatInfo.SendAddonMessage but it requires registration
+-- We need to register the prefix first for it to work
+local SendAddonMessageCompat
+local ADDON_PREFIX = "TRS" -- Use short prefix (max 16 chars recommended)
+
+-- Test what's actually available
+local hasGlobalSend = (type(SendAddonMessage) == "function")
+local hasCChatInfo = (C_ChatInfo ~= nil)
+local hasCChatSend = (C_ChatInfo and type(C_ChatInfo.SendAddonMessage) == "function")
+local hasRegister = (C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix) == "function")
+
+-- Try to register the prefix if the function exists
+if hasRegister then
+    C_ChatInfo.RegisterAddonMessagePrefix(ADDON_PREFIX)
+end
+
+if hasGlobalSend then
+    -- Classic/TBC API
+    SendAddonMessageCompat = function(prefix, message, channel)
+        return SendAddonMessage(prefix, message, channel)
+    end
+elseif hasCChatSend then
+    -- Retail/modern API (or Classic Era with C_ChatInfo)
+    SendAddonMessageCompat = function(prefix, message, channel)
+        return C_ChatInfo.SendAddonMessage(ADDON_PREFIX, message, channel)
+    end
+else
+    -- Fallback: no addon communication available
+    SendAddonMessageCompat = function(prefix, message, channel)
+        return false
+    end
+end
+
+-- Saved variables initialization
+TimbersRaidSummonerDB = TimbersRaidSummonerDB or {
+    keywords = {"*123"},
+    settings = {
+        playSoundOnAdd = true,
+        autoWhisper = false,
+        sendRaidMessage = true,
+        raidMessage = "Summoning %s, please help click!",
+        whisperMessage = "Summons incoming. Be ready to accept it. If you don't receive it within 30 seconds, let me know!",
+        checkMana = false,
+        checkShards = false,
+        shareList = false,
+        shamanColorVanilla = true -- true = pink (vanilla), false = blue (TBC+)
+    },
+    summonQueue = {}
+}
+
+-- Local references
+local db
+local currentlySummoning = nil -- Track who we're currently summoning
+local summonFromQueue = false -- Track if summon was initiated from queue
+local summonChannelActive = false -- Track if summon channel is active
+local summonStartShardCount = 0 -- Track shard count when summon starts
+
+-- Constants
+local QUEUE_TIMEOUT = 300 -- Time in seconds
+
+-- Frame references
+TRS.mainFrame = nil
+TRS.raidListFrame = nil
+TRS.summonQueueFrame = nil
+TRS.settingsFrame = nil
+TRS.settingsVisible = false
+
+-- StaticPopup for restoring default keywords
+StaticPopupDialogs["TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS"] = {
+    text = "Are you sure you want to restore the default keywords? This will delete all your existing keywords.",
+    button1 = "Yes",
+    button2 = "No",
+    OnAccept = function()
+        local db = TimbersRaidSummonerDB
+        if db then
+            db.keywords = {"*123"}
+            TRS:UpdateSettingsKeywords()
+            print("|cFF00FF00Timber's Raid Summoner:|r Keywords restored to defaults")
+        end
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+-- Initialize the addon
+local function Initialize()
+    db = TimbersRaidSummonerDB
+    TRS:CreateMainFrame()
+
+    -- Set up keybindings
+    BINDING_HEADER_TIMBERSRAIDSUMMONER = "Timber's Raid Summoner"
+    BINDING_NAME_TIMBERSRAIDSUMMONER_TOGGLE = "Toggle Timber's Raid Summoner Window"
+
+    print("|cFF00FF00Timber's Raid Summoner|r loaded. Type /trs or /timbersraidsummoner to toggle the interface.")
+end
+
+-- Create the main frame with three scrollable columns
+function TRS:CreateMainFrame()
+    -- Main container frame (starts smaller, expands when settings shown)
+    local mainFrame = CreateFrame("Frame", "TimbersRaidSummonerMainFrame", UIParent, "BackdropTemplate")
+    mainFrame:SetSize(725, 602) -- Start with just columns 1 and 2 (20 + 447 + 10 + 230 + 10 = 717)
+    mainFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    mainFrame:SetFrameStrata("HIGH")
+    mainFrame:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true,
+        tileSize = 32,
+        edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 }
+    })
+    mainFrame:SetBackdropColor(0, 0, 0, 0.9)
+    mainFrame:EnableMouse(true)
+    mainFrame:SetMovable(true)
+    mainFrame:RegisterForDrag("LeftButton")
+    mainFrame:SetScript("OnDragStart", mainFrame.StartMoving)
+    mainFrame:SetScript("OnDragStop", mainFrame.StopMovingOrSizing)
+    mainFrame:Hide()
+
+    TRS.mainFrame = mainFrame
+
+    -- Register with UI special frames so Escape closes the window
+    table.insert(UISpecialFrames, "TimbersRaidSummonerMainFrame")
+
+    -- Title texture (like FieldGuide)
+    local titleTexture = mainFrame:CreateTexture(nil, "OVERLAY")
+    titleTexture:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+    titleTexture:SetSize(500, 69)
+    titleTexture:SetPoint("TOP", mainFrame, "TOP", 0, 12)
+
+    -- Title text
+    local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", titleTexture, "TOP", 0, -14)
+    title:SetText("Timber's Raid Summoner")
+    title:SetTextColor(1, 0.82, 0, 1) -- Gold color
+
+    -- Gear button (settings toggle)
+    local gearButton = CreateFrame("Button", nil, mainFrame)
+    gearButton:SetSize(20, 20)
+    gearButton:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -40, -13)
+    gearButton:SetNormalTexture("Interface\\Icons\\Trade_Engineering")
+    gearButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+    gearButton:SetScript("OnClick", function()
+        TRS:ToggleSettings()
+    end)
+    gearButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Toggle Settings")
+        GameTooltip:Show()
+    end)
+    gearButton:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    -- Info bar below title
+    -- Soul Shard icon
+    local shardIcon = mainFrame:CreateTexture(nil, "OVERLAY")
+    shardIcon:SetSize(16, 16)
+    shardIcon:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 20, -40)
+    shardIcon:SetTexture("Interface\\Icons\\INV_Misc_Gem_Amethyst_02") -- Soul Shard icon
+    TRS.shardIcon = shardIcon
+
+    local shardCountText = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    shardCountText:SetPoint("LEFT", shardIcon, "RIGHT", 5, 0)
+    shardCountText:SetText("Soul Shards: 0")
+    TRS.shardCountText = shardCountText
+
+    local instructionText = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    instructionText:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -20, -40)
+    instructionText:SetText("Left click to select a character, right click to summon")
+
+    -- Close button
+    local closeButton = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -5, -5)
+
+    -- Column 1: Raid Members List (360px wide, 400px tall)
+    TRS:CreateRaidListColumn(mainFrame)
+
+    -- Column 2: Summon Queue (160px wide, 400px tall)
+    TRS:CreateSummonQueueColumn(mainFrame)
+
+    -- Column 3: Settings (360px wide, 400px tall) - hidden by default
+    TRS:CreateSettingsColumn(mainFrame)
+end
+
+-- Column 1: Raid Members List
+function TRS:CreateRaidListColumn(parent)
+    local xOffset = 20
+    local yOffset = -70 -- 20px gap below info bar
+
+    -- Header
+    local header = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    header:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, yOffset)
+    header:SetText("Raid Members")
+
+    -- Container frame for border (includes scrollbar)
+    local container = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    container:SetSize(447, 494)
+    container:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, yOffset - 20)
+    container:SetBackdrop({
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1
+    })
+    container:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+
+    -- Background for entire container
+    local bg = container:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(container)
+    bg:SetColorTexture(0.1, 0.1, 0.1, 0.5)
+
+    -- Scroll frame (5px padding inside border)
+    local scrollFrame = CreateFrame("ScrollFrame", "TimbersRaidSummonerRaidListScroll", container, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetSize(416, 484)
+    scrollFrame:SetPoint("TOPLEFT", container, "TOPLEFT", 5, -5)
+
+    -- Content frame
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(400, 484)
+    scrollFrame:SetScrollChild(content)
+
+    TRS.raidListFrame = {
+        scrollFrame = scrollFrame,
+        content = content,
+        buttons = {}
+    }
+
+    TRS:UpdateRaidList()
+end
+
+-- Column 2: Summon Queue
+function TRS:CreateSummonQueueColumn(parent)
+    local xOffset = 477 -- 20 + 447 + 10
+    local yOffset = -70 -- 20px gap below info bar
+
+    -- Header
+    local header = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    header:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, yOffset)
+    header:SetText("Summon Queue")
+
+    -- Container frame for border (includes scrollbar)
+    local container = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    container:SetSize(230, 494)
+    container:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, yOffset - 20)
+    container:SetBackdrop({
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1
+    })
+    container:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+
+    -- Background for entire container
+    local bg = container:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(container)
+    bg:SetColorTexture(0.1, 0.15, 0.1, 0.5)
+
+    -- Scroll frame (5px padding inside border)
+    local scrollFrame = CreateFrame("ScrollFrame", "TimbersRaidSummonerSummonQueueScroll", container, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetSize(200, 484)
+    scrollFrame:SetPoint("TOPLEFT", container, "TOPLEFT", 5, -5)
+
+    -- Content frame
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(180, 484)
+    scrollFrame:SetScrollChild(content)
+
+    TRS.summonQueueFrame = {
+        scrollFrame = scrollFrame,
+        content = content,
+        buttons = {}
+    }
+
+    TRS:UpdateSummonQueue()
+end
+
+-- Column 3: Keywords List
+-- Column 3: Settings Panel
+function TRS:CreateSettingsColumn(parent)
+    local xOffset = 717 -- 20 + 447 + 10 + 230 + 10
+    local yOffset = -70 -- 20px gap below info bar
+
+    -- Settings container frame
+    local settingsFrame = CreateFrame("Frame", nil, parent)
+    settingsFrame:SetSize(385, 430)
+    settingsFrame:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, yOffset)
+    settingsFrame:Hide()
+
+    -- Header
+    local header = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    header:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 0, 0)
+    header:SetText("Settings")
+    
+    -- Version text
+    local versionText = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    versionText:SetPoint("TOPRIGHT", settingsFrame, "TOPRIGHT", 0, 0)
+    versionText:SetText("v" .. TRS.VERSION)
+    versionText:SetTextColor(0.7, 0.7, 0.7)
+
+    -- Container frame for border (includes scrollbar)
+    local container = CreateFrame("Frame", nil, settingsFrame, "BackdropTemplate")
+    container:SetSize(385, 494)
+    container:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 0, -20)
+    container:SetBackdrop({
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1
+    })
+    container:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+
+    -- Background for entire container
+    local bg = container:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(container)
+    bg:SetColorTexture(0.1, 0.1, 0.1, 0.5)
+
+    -- Scroll frame for settings (5px padding inside border)
+    local scrollFrame = CreateFrame("ScrollFrame", "TimbersRaidSummonerSettingsScroll", container, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetSize(354, 484)
+    scrollFrame:SetPoint("TOPLEFT", container, "TOPLEFT", 5, -5)
+
+    -- Content frame
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(340, 800)
+    scrollFrame:SetScrollChild(content)
+
+    local yPos = -10
+
+    -- Keywords Section
+    local kwHeader = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    kwHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    kwHeader:SetText("Keywords")
+    yPos = yPos - 20
+
+    -- Keyword explanation text
+    local kwExplain = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    kwExplain:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    kwExplain:SetPoint("TOPRIGHT", content, "TOPRIGHT", -10, yPos)
+    kwExplain:SetJustifyH("LEFT")
+    kwExplain:SetText("Use * prefix to match anywhere (e.g., *123). Plain text matches exact message. Use ^ or $ for regex patterns.")
+    kwExplain:SetTextColor(0.8, 0.8, 0.8)
+    yPos = yPos - 30
+
+    -- Keyword input
+    local inputBox = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    inputBox:SetSize(200, 25)
+    inputBox:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    inputBox:SetAutoFocus(false)
+    inputBox:SetMaxLetters(50)
+
+    local addButton = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
+    addButton:SetSize(60, 25)
+    addButton:SetPoint("LEFT", inputBox, "RIGHT", 5, 0)
+    addButton:SetText("Add")
+    addButton:SetScript("OnClick", function()
+        local keyword = inputBox:GetText()
+        if keyword and keyword ~= "" then
+            table.insert(db.keywords, keyword)
+            inputBox:SetText("")
+            TRS:UpdateSettingsKeywords()
+        end
+    end)
+    yPos = yPos - 30
+
+    -- Keywords list container with border
+    local kwContainer = CreateFrame("Frame", nil, content, "BackdropTemplate")
+    kwContainer:SetSize(319, 159)
+    kwContainer:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    kwContainer:SetBackdrop({
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1
+    })
+    kwContainer:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+
+    -- Background for keyword container
+    local kwBg = kwContainer:CreateTexture(nil, "BACKGROUND")
+    kwBg:SetAllPoints(kwContainer)
+    kwBg:SetColorTexture(0.1, 0.1, 0.1, 0.3)
+
+    -- Keywords list scroll frame (5px padding inside border)
+    local kwScrollFrame = CreateFrame("ScrollFrame", nil, kwContainer, "UIPanelScrollFrameTemplate")
+    kwScrollFrame:SetSize(286, 150)
+    kwScrollFrame:SetPoint("TOPLEFT", kwContainer, "TOPLEFT", 5, -5)
+
+    -- Content frame inside scroll frame
+    local kwListFrame = CreateFrame("Frame", nil, kwScrollFrame)
+    kwListFrame:SetSize(286, 150)
+    kwScrollFrame:SetScrollChild(kwListFrame)
+
+    -- Restore Defaults button
+    yPos = yPos - 165
+    local restoreButton = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
+    restoreButton:SetSize(120, 25)
+    restoreButton:SetPoint("TOPRIGHT", content, "TOPRIGHT", -10, yPos)
+    restoreButton:SetText("Restore Defaults")
+    restoreButton:SetScript("OnClick", function()
+        StaticPopup_Show("TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS")
+    end)
+    yPos = yPos - 30
+
+    -- Divider
+    local divider1 = content:CreateTexture(nil, "ARTWORK")
+    divider1:SetSize(320, 1)
+    divider1:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    divider1:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+    yPos = yPos - 15
+
+    -- Messages Section
+    local msgHeader = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    msgHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    msgHeader:SetText("Messages")
+    yPos = yPos - 25
+
+    -- Send raid message checkbox
+    local raidMsgCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    raidMsgCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    raidMsgCheck:SetChecked(db.settings.sendRaidMessage)
+    raidMsgCheck:SetScript("OnClick", function(self)
+        db.settings.sendRaidMessage = self:GetChecked()
+    end)
+    local raidMsgCheckLabel = raidMsgCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    raidMsgCheckLabel:SetPoint("LEFT", raidMsgCheck, "RIGHT", 5, 0)
+    raidMsgCheckLabel:SetText("Send raid message when casting")
+    yPos = yPos - 30
+
+    -- Auto whisper checkbox
+    local whisperCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    whisperCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    whisperCheck:SetChecked(db.settings.autoWhisper)
+    whisperCheck:SetScript("OnClick", function(self)
+        db.settings.autoWhisper = self:GetChecked()
+    end)
+    local whisperLabel = whisperCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    whisperLabel:SetPoint("LEFT", whisperCheck, "RIGHT", 5, 0)
+    whisperLabel:SetText("Auto-whisper summoned players")
+    yPos = yPos - 30
+
+    -- Raid message label
+    local raidMsgLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    raidMsgLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    raidMsgLabel:SetText("Raid message:")
+    yPos = yPos - 20
+
+    local raidMsgBox = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    raidMsgBox:SetSize(300, 25)
+    raidMsgBox:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    raidMsgBox:SetAutoFocus(false)
+    raidMsgBox:SetText(db.settings.raidMessage)
+    raidMsgBox:SetScript("OnTextChanged", function(self)
+        db.settings.raidMessage = self:GetText()
+    end)
+    yPos = yPos - 35
+
+    -- Whisper message label
+    local whisperMsgLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    whisperMsgLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    whisperMsgLabel:SetText("Whisper message:")
+    yPos = yPos - 20
+
+    local whisperMsgBox = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    whisperMsgBox:SetSize(300, 25)
+    whisperMsgBox:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    whisperMsgBox:SetAutoFocus(false)
+    whisperMsgBox:SetText(db.settings.whisperMessage)
+    whisperMsgBox:SetScript("OnTextChanged", function(self)
+        db.settings.whisperMessage = self:GetText()
+    end)
+    yPos = yPos - 40
+
+    -- Misc section divider
+    local divider3 = content:CreateTexture(nil, "ARTWORK")
+    divider3:SetSize(320, 1)
+    divider3:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    divider3:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+    yPos = yPos - 10
+
+    -- Misc header
+    local miscHeader = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    miscHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    miscHeader:SetText("Misc")
+    yPos = yPos - 25
+
+    -- Play sound checkbox
+    local soundCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    soundCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    soundCheck:SetChecked(db.settings.playSoundOnAdd)
+    soundCheck:SetScript("OnClick", function(self)
+        db.settings.playSoundOnAdd = self:GetChecked()
+    end)
+    local soundLabel = soundCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    soundLabel:SetPoint("LEFT", soundCheck, "RIGHT", 5, 0)
+    soundLabel:SetText("Play sound when player added to queue")
+    yPos = yPos - 30
+
+    -- Shaman color checkbox
+    local shamanColorCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    shamanColorCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    shamanColorCheck:SetChecked(db.settings.shamanColorVanilla)
+    shamanColorCheck:SetScript("OnClick", function(self)
+        db.settings.shamanColorVanilla = self:GetChecked()
+        -- Refresh raid list to show new colors
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
+    end)
+    local shamanColorLabel = shamanColorCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    shamanColorLabel:SetPoint("LEFT", shamanColorCheck, "RIGHT", 5, 0)
+    shamanColorLabel:SetText("Use vanilla Shaman color (pink)")
+
+    TRS.settingsFrame = {
+        frame = settingsFrame,
+        kwListFrame = kwListFrame,
+        kwButtons = {}
+    }
+
+    TRS:UpdateSettingsKeywords()
+end
+
+-- Update raid members list
+function TRS:UpdateRaidList()
+    if not TRS.raidListFrame then return end
+
+    local content = TRS.raidListFrame.content
+    local buttons = TRS.raidListFrame.buttons
+    local groupHeaders = TRS.raidListFrame.groupHeaders
+
+    -- Initialize group headers if needed
+    if not groupHeaders then
+        groupHeaders = {}
+        TRS.raidListFrame.groupHeaders = groupHeaders
+    end
+
+    -- Clear existing buttons
+    for _, btn in ipairs(buttons) do
+        btn:Hide()
+    end
+
+    -- Hide all group headers initially
+    for _, header in ipairs(groupHeaders) do
+        header:Hide()
+    end
+
+    local numMembers = GetNumGroupMembers()
+    local isRaid = IsInRaid()
+
+    -- Build member data by group
+    local groups = {}
+    for g = 1, 8 do
+        groups[g] = {}
+    end
+
+    for i = 1, numMembers do
+        local name, rank, subgroup, level, class, classToken
+        local unitId
+        if isRaid then
+            name, rank, subgroup, level, class = GetRaidRosterInfo(i)
+            unitId = "raid"..i
+            _, classToken = UnitClass(unitId)
+            -- Fallback to UnitLevel if GetRaidRosterInfo didn't provide it
+            if not level or level == 0 then
+                level = UnitLevel(unitId)
+            end
+        else
+            if i == 1 then
+                name = UnitName("player")
+                class, classToken = UnitClass("player")
+                level = UnitLevel("player")
+                unitId = "player"
+                subgroup = 1
+            elseif i <= numMembers then
+                unitId = "party"..(i-1)
+                name = UnitName(unitId)
+                class, classToken = UnitClass(unitId)
+                level = UnitLevel(unitId)
+                subgroup = 1
+            end
+        end
+
+        if name and subgroup then
+            table.insert(groups[subgroup], {
+                name = name,
+                unitId = unitId,
+                level = level,
+                class = class,
+                classToken = classToken
+            })
+        end
+    end
+
+    -- Layout constants
+    local buttonHeight = 20
+    local headerHeight = 18
+    local groupSpacing = 3
+    local column1X = 0
+    local column2X = 210
+    local columnWidth = 200
+
+    local buttonIndex = 0
+
+    -- Display groups in rows: 1-2, 3-4, 5-6, 7-8
+    for groupNum = 1, 8 do
+        -- Calculate row (0-3) and column (1 or 2)
+        local row = math.floor((groupNum - 1) / 2)
+        local col = ((groupNum - 1) % 2) + 1
+
+        local xPos = (col == 1) and column1X or column2X
+
+        -- Calculate Y offset based on row
+        -- Each row contains: header + 5 buttons + spacing
+        local rowHeight = headerHeight + (5 * buttonHeight) + groupSpacing
+        local yOffset = row * rowHeight
+
+        -- Create or show group header
+        local header = groupHeaders[groupNum]
+        if not header then
+            header = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            groupHeaders[groupNum] = header
+        end
+        header:SetPoint("TOPLEFT", content, "TOPLEFT", xPos, -yOffset)
+        header:SetText("Group " .. groupNum)
+        header:SetTextColor(0.7, 0.7, 0.7)
+        header:Show()
+
+        -- Display members in this group (up to 5 slots)
+        for slot = 1, 5 do
+            buttonIndex = buttonIndex + 1
+            local member = groups[groupNum][slot]
+
+            local button = buttons[buttonIndex]
+            if not button then
+                button = CreateFrame("Button", nil, content, "SecureActionButtonTemplate")
+                button:SetSize(columnWidth, buttonHeight)
+                button:SetNormalTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+                button:GetNormalTexture():SetAlpha(0.3)
+                button:SetHighlightTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+
+                -- Name text (left-aligned)
+                local nameText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                nameText:SetPoint("LEFT", button, "LEFT", 5, 0)
+                nameText:SetJustifyH("LEFT")
+                nameText:SetWidth(100)
+                button.nameText = nameText
+
+                -- Level text (centered)
+                local levelText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                levelText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
+                levelText:SetJustifyH("CENTER")
+                levelText:SetWidth(25)
+                button.levelText = levelText
+
+                -- Class text (right-aligned)
+                local classText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                classText:SetPoint("LEFT", levelText, "RIGHT", 5, 0)
+                classText:SetJustifyH("LEFT")
+                classText:SetWidth(60)
+                button.classText = classText
+
+                -- Click handlers
+                button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+                
+                -- Add tooltip handlers
+                button:SetScript("OnEnter", function(self)
+                    if self.unitId then
+                        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                        GameTooltip:SetText(self.playerName, 1, 1, 1)
+                        
+                        -- Show zone/location
+                        -- For raid members, we can get their zone from raid roster
+                        if IsInRaid() then
+                            local numMembers = GetNumGroupMembers()
+                            for i = 1, numMembers do
+                                local name, _, _, _, _, _, zone = GetRaidRosterInfo(i)
+                                if name == self.playerName then
+                                    if zone and zone ~= "" then
+                                        GameTooltip:AddLine(zone, 0.8, 0.8, 0.8)
+                                    else
+                                        GameTooltip:AddLine("Zone: Unknown", 0.6, 0.6, 0.6)
+                                    end
+                                    break
+                                end
+                            end
+                        else
+                            -- In party, everyone is in same zone typically
+                            local zone = GetRealZoneText()
+                            if zone and zone ~= "" then
+                                GameTooltip:AddLine(zone, 0.8, 0.8, 0.8)
+                            end
+                        end
+                        
+                        -- Show who is summoning them if applicable
+                        if self.isSummoning then
+                            GameTooltip:AddLine(" ", 1, 1, 1)
+                            local summonerText = "Being summoned by " .. (self.summonerName or "Unknown")
+                            GameTooltip:AddLine(summonerText, 0, 1, 0)
+                        end
+                        
+                        GameTooltip:Show()
+                    end
+                end)
+                
+                button:SetScript("OnLeave", function(self)
+                    GameTooltip:Hide()
+                end)
+
+                buttons[buttonIndex] = button
+            end
+
+            -- Position button (yOffset + header height + slot position)
+            local buttonY = yOffset + headerHeight + ((slot - 1) * buttonHeight)
+            button:SetPoint("TOPLEFT", content, "TOPLEFT", xPos, -buttonY)
+
+            if member then
+                -- Store the unit ID and name on the button for PreClick
+                button.unitId = member.unitId
+                button.playerName = member.name
+                
+                -- Store level, class, and classToken for later restoration
+                button.storedLevel = member.level
+                button.storedClass = member.class
+                button.storedClassToken = member.classToken
+
+                -- Set click handler with current unitId and name
+                button:SetScript("PreClick", function(self, btn)
+                    if not InCombatLockdown() then
+                        if btn == "LeftButton" then
+                            self:SetAttribute("type1", "target")
+                            self:SetAttribute("unit", self.unitId)
+                        elseif btn == "RightButton" then
+                            currentlySummoning = self.playerName
+                            summonFromQueue = false
+                            -- Update UI for both panes locally
+                            TRS:UpdateSummoningStateUI(self.playerName, true, UnitName("player"))
+                            -- Broadcast summoning state
+                            TRS:BroadcastSummoningState(self.playerName, true)
+                            self:SetAttribute("type1", "target")
+                            self:SetAttribute("unit", self.unitId)
+                            self:SetAttribute("type2", "spell")
+                            self:SetAttribute("spell", "Ritual of Summoning")
+                        end
+                    end
+                end)
+
+                -- Set individual column texts
+                button.nameText:SetText(member.name)
+                
+                -- Only update level/class if not currently summoning
+                if button.isSummoning then
+                    -- Keep the "Summoning..." text
+                    button.levelText:SetText("")
+                    button.classText:SetText("Summoning...")
+                    button.levelText:SetTextColor(1, 1, 0)
+                    button.classText:SetTextColor(1, 1, 0)
+                else
+                    -- Show normal level/class info
+                    button.levelText:SetText(tostring(member.level or 0))
+                    button.classText:SetText(member.class or member.classToken or "")
+                    
+                    -- Set class color using the English token
+                    local r, g, b = TRS:GetClassColor(member.classToken)
+                    button.levelText:SetTextColor(r, g, b)
+                    button.classText:SetTextColor(r, g, b)
+                end
+                
+                -- Name always gets class color
+                local r, g, b = TRS:GetClassColor(member.classToken)
+                button.nameText:SetTextColor(r, g, b)
+
+                button:Show()
+            else
+                -- Empty slot
+                button.nameText:SetText("")
+                button.levelText:SetText("")
+                button.classText:SetText("")
+                button.unitId = nil
+                button.playerName = nil
+                button:SetScript("PreClick", nil)
+                button:Show()
+            end
+        end
+    end
+
+    -- Calculate total height needed (4 rows of groups)
+    local rowHeight = headerHeight + (5 * buttonHeight) + groupSpacing
+    local totalHeight = 4 * rowHeight
+    content:SetHeight(math.max(484, totalHeight))
+end
+
+-- Update summon queue
+function TRS:UpdateSummonQueue()
+    if not TRS.summonQueueFrame then return end
+
+    local content = TRS.summonQueueFrame.content
+    local buttons = TRS.summonQueueFrame.buttons
+
+    -- Clear existing buttons
+    for _, btn in ipairs(buttons) do
+        btn:Hide()
+    end
+
+    local yOffset = 0
+    local buttonHeight = 30
+
+    for i, entry in ipairs(db.summonQueue) do
+        local button = buttons[i]
+        if not button then
+            button = CreateFrame("Button", nil, content, "SecureActionButtonTemplate")
+            button:SetSize(200, buttonHeight)
+            button:SetNormalTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+            button:GetNormalTexture():SetAlpha(0.3)
+            button:SetHighlightTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+
+            -- Name text (left-aligned)
+            local nameText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            nameText:SetPoint("LEFT", button, "LEFT", 5, 0)
+            nameText:SetJustifyH("LEFT")
+            nameText:SetWidth(100)
+            button.nameText = nameText
+
+            -- Level text (centered)
+            local levelText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            levelText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
+            levelText:SetJustifyH("CENTER")
+            levelText:SetWidth(25)
+            button.levelText = levelText
+
+            -- Class text (right-aligned)
+            local classText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            classText:SetPoint("LEFT", levelText, "RIGHT", 5, 0)
+            classText:SetJustifyH("LEFT")
+            classText:SetWidth(60)
+            button.classText = classText
+
+            -- Register for all mouse buttons
+            button:RegisterForClicks("LeftButtonUp", "RightButtonUp", "MiddleButtonUp")
+
+            -- Function to update tooltip content
+            local function UpdateTooltipContent(self)
+                if not self.queueEntry then return end
+
+                GameTooltip:ClearLines()
+
+                -- Show player name
+                GameTooltip:AddLine(self.playerName, 1, 1, 1)
+
+                -- Show timestamp
+                local timestamp = self.queueEntry.timestamp or 0
+                local timeAdded = date("%I:%M:%S %p", timestamp)
+                GameTooltip:AddLine("Added: " .. timeAdded, 0.8, 0.8, 0.8)
+
+                -- Show countdown
+                local currentTime = time()
+                local timeInQueue = currentTime - timestamp
+                local timeRemaining = QUEUE_TIMEOUT - timeInQueue
+
+                if timeRemaining > 0 then
+                    local minutes = math.floor(timeRemaining / 60)
+                    local seconds = timeRemaining % 60
+                    GameTooltip:AddLine(string.format("Expires in: %d:%02d", minutes, seconds), 1, 1, 0)
+                else
+                    GameTooltip:AddLine("Expiring soon...", 1, 0, 0)
+                end
+
+                -- Show who is summoning them if applicable
+                if self.isSummoning then
+                    GameTooltip:AddLine(" ", 1, 1, 1)
+                    local summonerText = "Being summoned by " .. (self.summonerName or "Unknown")
+                    GameTooltip:AddLine(summonerText, 0, 1, 0)
+                end
+
+                GameTooltip:Show()
+            end
+
+            -- Add tooltip handlers
+            button:SetScript("OnEnter", function(self)
+                if self.queueEntry then
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    UpdateTooltipContent(self)
+
+                    -- Set up OnUpdate to refresh tooltip every 0.1 seconds
+                    self.tooltipUpdateTime = 0
+                    self:SetScript("OnUpdate", function(self, elapsed)
+                        self.tooltipUpdateTime = (self.tooltipUpdateTime or 0) + elapsed
+                        if self.tooltipUpdateTime >= 0.1 then
+                            self.tooltipUpdateTime = 0
+                            UpdateTooltipContent(self)
+                        end
+                    end)
+                end
+            end)
+
+            button:SetScript("OnLeave", function(self)
+                GameTooltip:Hide()
+                self:SetScript("OnUpdate", nil)
+            end)
+
+            buttons[i] = button
+        end
+
+        -- Store the queue entry for tooltip access
+        button.queueEntry = entry
+
+        -- Store player name and index for lookup
+        button.playerName = entry.name
+        button.queueIndex = i
+
+        -- Handle middle-click in PostClick (after secure actions)
+        button:SetScript("PostClick", function(self, btn)
+            if btn == "MiddleButton" then
+                TRS:RemoveFromSummonQueue(self.playerName)
+            end
+        end)
+
+        button:SetScript("PreClick", function(self, btn)
+            local playerName = self.playerName
+            if not InCombatLockdown() then
+                -- Try to find the unit
+                local numMembers = GetNumGroupMembers()
+                local isRaid = IsInRaid()
+                local targetUnit = nil
+                if isRaid then
+                    for j = 1, numMembers do
+                        if UnitName("raid"..j) == playerName then
+                            targetUnit = "raid"..j
+                            break
+                        end
+                    end
+                else
+                    if UnitName("player") == playerName then
+                        targetUnit = "player"
+                    else
+                        for j = 1, numMembers - 1 do
+                            if UnitName("party"..j) == playerName then
+                                targetUnit = "party"..j
+                                break
+                            end
+                        end
+                    end
+                end
+                if targetUnit then
+                    if btn == "LeftButton" then
+                        self:SetAttribute("type1", "target")
+                        self:SetAttribute("unit", targetUnit)
+                    elseif btn == "RightButton" then
+                        -- Check mana before attempting to summon
+                        local currentMana = UnitPower("player", 0) -- 0 is mana
+                        if currentMana < 300 then
+                            print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r Not enough mana to summon (need 300 mana)")
+                            return
+                        end
+
+                        -- Check if target is in the same group
+                        if not targetUnit then
+                            print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r " .. playerName .. " is not in your group")
+                            return
+                        end
+
+                        -- Check if player has a target
+                        if not UnitExists("target") then
+                            print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r You must have a target to summon")
+                            return
+                        end
+
+                        currentlySummoning = playerName
+                        summonFromQueue = true
+                        -- Update UI for both panes locally
+                        TRS:UpdateSummoningStateUI(playerName, true, UnitName("player"))
+                        -- Broadcast summoning state
+                        TRS:BroadcastSummoningState(playerName, true)
+                        self:SetAttribute("type1", "target")
+                        self:SetAttribute("unit", targetUnit)
+                        self:SetAttribute("type2", "spell")
+                        self:SetAttribute("spell", "Ritual of Summoning")
+                    end
+                end
+            end
+        end)
+
+        button:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -yOffset)
+
+        -- Get player info for this queue entry
+        local playerName = entry.name
+        local classToken = nil
+        local level = nil
+        local class = nil
+        local numMembers = GetNumGroupMembers()
+        local isRaid = IsInRaid()
+
+        if isRaid then
+            for j = 1, numMembers do
+                if UnitName("raid"..j) == playerName then
+                    class, classToken = UnitClass("raid"..j)
+                    level = UnitLevel("raid"..j)
+                    break
+                end
+            end
+        else
+            if UnitName("player") == playerName then
+                class, classToken = UnitClass("player")
+                level = UnitLevel("player")
+            else
+                for j = 1, numMembers - 1 do
+                    if UnitName("party"..j) == playerName then
+                        class, classToken = UnitClass("party"..j)
+                        level = UnitLevel("party"..j)
+                        break
+                    end
+                end
+            end
+        end
+
+        -- Store the level, class, and classToken on the button for later restoration
+        button.storedLevel = level
+        button.storedClass = class
+        button.storedClassToken = classToken
+
+        -- Set individual column texts
+        button.nameText:SetText(playerName)
+
+        -- Only update level/class if not currently summoning
+        if button.isSummoning then
+            -- Keep the "Summoning..." text
+            button.levelText:SetText("")
+            button.classText:SetText("Summoning...")
+            button.levelText:SetTextColor(1, 1, 0)
+            button.classText:SetTextColor(1, 1, 0)
+        else
+            -- Show normal level/class info
+            button.levelText:SetText(tostring(level or 0))
+            button.classText:SetText(class or classToken or "")
+
+            -- Set class color
+            local r, g, b = TRS:GetClassColor(classToken)
+            button.levelText:SetTextColor(r, g, b)
+            button.classText:SetTextColor(r, g, b)
+        end
+
+        -- Name always gets class color
+        local r, g, b = TRS:GetClassColor(classToken)
+        button.nameText:SetTextColor(r, g, b)
+
+        button:Show()
+
+        yOffset = yOffset + buttonHeight
+    end
+
+    content:SetHeight(math.max(400, yOffset))
+end
+
+-- Broadcast summoning state to raid
+function TRS:BroadcastSummoningState(playerName, isSummoning)
+    if IsInRaid() or IsInGroup() then
+        local channel = IsInRaid() and "RAID" or "PARTY"
+        local state = isSummoning and "1" or "0"
+        local summoner = UnitName("player") or ""
+        local msg = "SUMMONING:" .. playerName .. ":" .. state .. ":" .. summoner
+        SendAddonMessageCompat("TRS", msg, channel)
+    end
+end
+
+-- Update summoning state in UI (both raid list and queue)
+function TRS:UpdateSummoningStateUI(playerName, isSummoning, summonerName)
+    -- Update summon queue buttons
+    if TRS.summonQueueFrame then
+        local buttons = TRS.summonQueueFrame.buttons
+        for _, button in ipairs(buttons) do
+            if button.playerName == playerName then
+                button.isSummoning = isSummoning
+                button.summonerName = summonerName
+
+                if isSummoning then
+                    -- Show "Summoning..." text
+                    button.levelText:SetText("")
+                    button.classText:SetText("Summoning...")
+                    button.levelText:SetTextColor(1, 1, 0)
+                    button.classText:SetTextColor(1, 1, 0)
+                else
+                    -- Restore level and class using stored data
+                    if button.storedLevel and button.storedClass and button.storedClassToken then
+                        button.levelText:SetText(tostring(button.storedLevel or 0))
+                        button.classText:SetText(button.storedClass or button.storedClassToken or "")
+
+                        -- Restore class color for both level and class text
+                        local r, g, b = TRS:GetClassColor(button.storedClassToken)
+                        button.levelText:SetTextColor(r, g, b)
+                        button.classText:SetTextColor(r, g, b)
+                    end
+                end
+                break
+            end
+        end
+    end
+
+    -- Update raid list buttons
+    if TRS.raidListFrame then
+        local buttons = TRS.raidListFrame.buttons
+        for _, button in ipairs(buttons) do
+            if button.playerName == playerName then
+                button.isSummoning = isSummoning
+                button.summonerName = summonerName
+
+                if isSummoning then
+                    -- Show "Summoning..." text
+                    button.levelText:SetText("")
+                    button.classText:SetText("Summoning...")
+                    button.levelText:SetTextColor(1, 1, 0)
+                    button.classText:SetTextColor(1, 1, 0)
+                else
+                    -- Restore level and class using stored data
+                    if button.storedLevel and button.storedClass and button.storedClassToken then
+                        button.levelText:SetText(tostring(button.storedLevel or 0))
+                        button.classText:SetText(button.storedClass or button.storedClassToken or "")
+
+                        -- Restore class color for both level and class text
+                        local r, g, b = TRS:GetClassColor(button.storedClassToken)
+                        button.levelText:SetTextColor(r, g, b)
+                        button.classText:SetTextColor(r, g, b)
+                    end
+                end
+                break
+            end
+        end
+    end
+end
+
+-- Broadcast queue removal to raid
+function TRS:BroadcastQueueRemoval(removedPlayer, removerName, reason)
+    if IsInRaid() or IsInGroup() then
+        local channel = IsInRaid() and "RAID" or "PARTY"
+        local msg = "REMOVED:" .. removedPlayer .. ":" .. removerName .. ":" .. reason
+        SendAddonMessageCompat("TRS", msg, channel)
+    end
+end
+
+-- Clear summoning state for a player
+function TRS:ClearSummoningState(playerName)
+    local wasCleared = false
+    
+    -- Clear in summon queue
+    if TRS.summonQueueFrame then
+        local buttons = TRS.summonQueueFrame.buttons
+        for _, button in ipairs(buttons) do
+            if button.playerName == playerName and button.isSummoning then
+                button.isSummoning = false
+                wasCleared = true
+                -- Restore using stored data
+                if button.storedLevel and button.storedClass and button.storedClassToken then
+                    button.levelText:SetText(tostring(button.storedLevel or 0))
+                    button.classText:SetText(button.storedClass or button.storedClassToken or "")
+
+                    -- Restore class color
+                    local r, g, b = TRS:GetClassColor(button.storedClassToken)
+                    button.levelText:SetTextColor(r, g, b)
+                    button.classText:SetTextColor(r, g, b)
+                end
+                break
+            end
+        end
+    end
+    
+    -- Clear in raid list
+    if TRS.raidListFrame then
+        local buttons = TRS.raidListFrame.buttons
+        for _, button in ipairs(buttons) do
+            if button.playerName == playerName and button.isSummoning then
+                button.isSummoning = false
+                wasCleared = true
+                -- Restore using stored data
+                if button.storedLevel and button.storedClass and button.storedClassToken then
+                    button.levelText:SetText(tostring(button.storedLevel or 0))
+                    button.classText:SetText(button.storedClass or button.storedClassToken or "")
+
+                    -- Restore class color
+                    local r, g, b = TRS:GetClassColor(button.storedClassToken)
+                    button.levelText:SetTextColor(r, g, b)
+                    button.classText:SetTextColor(r, g, b)
+                end
+                break
+            end
+        end
+    end
+    
+    -- Broadcast the state change if we cleared anything
+    if wasCleared then
+        TRS:BroadcastSummoningState(playerName, false)
+    end
+end
+
+-- Update keywords list
+-- Update keywords in settings panel
+function TRS:UpdateSettingsKeywords()
+    if not TRS.settingsFrame then return end
+
+    local content = TRS.settingsFrame.kwListFrame
+    local buttons = TRS.settingsFrame.kwButtons
+
+    -- Clear existing buttons
+    for _, btn in ipairs(buttons) do
+        btn:Hide()
+    end
+
+    local yOffset = 0
+    local buttonHeight = 25
+
+    for i, keyword in ipairs(db.keywords) do
+        local button = buttons[i]
+        if not button then
+            button = CreateFrame("Button", nil, content)
+            button:SetSize(286, buttonHeight)
+            button:SetNormalTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+            button:GetNormalTexture():SetAlpha(0.3)
+            button:SetHighlightTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+
+            local text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            text:SetPoint("LEFT", button, "LEFT", 5, 0)
+            button.text = text
+
+            -- Delete button
+            local deleteBtn = CreateFrame("Button", nil, button, "UIPanelCloseButton")
+            deleteBtn:SetSize(20, 20)
+            deleteBtn:SetPoint("RIGHT", button, "RIGHT", 0, 0)
+            deleteBtn:SetScript("OnClick", function()
+                table.remove(db.keywords, i)
+                TRS:UpdateSettingsKeywords()
+            end)
+            button.deleteBtn = deleteBtn
+
+            buttons[i] = button
+        end
+
+        button:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -yOffset)
+        button.text:SetText(keyword)
+        button:Show()
+
+        yOffset = yOffset + buttonHeight
+    end
+
+    -- Update scroll height to fit all keywords
+    content:SetHeight(math.max(150, yOffset))
+end
+
+-- Toggle settings panel
+function TRS:ToggleSettings()
+    TRS.settingsVisible = not TRS.settingsVisible
+
+    if TRS.settingsVisible then
+        -- Show settings, expand frame
+        TRS.mainFrame:SetSize(1121, 602) -- 20 + 447 + 10 + 230 + 10 + 385 + 10 = 1112
+        TRS.settingsFrame.frame:Show()
+    else
+        -- Hide settings, shrink frame
+        TRS.mainFrame:SetSize(725, 602)
+        TRS.settingsFrame.frame:Hide()
+    end
+end
+
+-- Summon a player
+function TRS:SummonPlayer(playerName, unitId, silentMode)
+    -- Send messages first
+    if not silentMode then
+        SendChatMessage(string.format(db.settings.raidMessage, playerName), "RAID")
+        if db.settings.autoWhisper then
+            SendChatMessage(db.settings.whisperMessage, "WHISPER", nil, playerName)
+        end
+    end
+
+    -- Use secure button to target and cast
+    if TRS.secureButton and unitId and not InCombatLockdown() then
+        TRS.secureButton:SetAttribute("type", "macro")
+        TRS.secureButton:SetAttribute("macrotext", "/target " .. playerName .. "\n/cast Ritual of Summoning")
+        TRS.secureButton:Click()
+    end
+
+    if not silentMode then
+        print("Summoning " .. playerName)
+    else
+        print("Summoning " .. playerName .. " (silent mode)")
+    end
+end
+
+-- Slash command handler
+SLASH_TIMBERSRAIDSUMMONER1 = "/TRS"
+SLASH_TIMBERSRAIDSUMMONER2 = "/trs"
+SLASH_TIMBERSRAIDSUMMONER3 = "/raidsummoner"
+SLASH_TIMBERSRAIDSUMMONER4 = "/timbersraidsummoner"
+SlashCmdList["TIMBERSRAIDSUMMONER"] = function(msg)
+    TRS:ToggleFrame()
+end
+
+-- Keybind function
+function TimbersRaidSummoner_ToggleFrame()
+    TRS:ToggleFrame()
+end
+
+-- Get class color based on settings
+function TRS:GetClassColor(class)
+    if not class then return 1, 1, 1 end
+
+    local colors = {
+        WARRIOR = {0.78, 0.61, 0.43},
+        PALADIN = {0.96, 0.55, 0.73},
+        HUNTER = {0.67, 0.83, 0.45},
+        ROGUE = {1.00, 0.96, 0.41},
+        PRIEST = {1.00, 1.00, 1.00},
+        SHAMAN = db.settings.shamanColorVanilla and {0.96, 0.55, 0.73} or {0.00, 0.44, 0.87},
+        MAGE = {0.41, 0.80, 0.94},
+        WARLOCK = {0.58, 0.51, 0.79},
+        DRUID = {1.00, 0.49, 0.04}
+    }
+
+    local color = colors[class] or {1, 1, 1}
+    return color[1], color[2], color[3]
+end
+
+-- Toggle frame function
+function TRS:ToggleFrame()
+    if TRS.mainFrame then
+        if TRS.mainFrame:IsShown() then
+            TRS.mainFrame:Hide()
+        else
+            TRS.mainFrame:Show()
+            TRS:UpdateRaidList()
+            TRS:UpdateSummonQueue()
+            TRS:UpdateShardCount()
+            if TRS.settingsVisible then
+                TRS:UpdateSettingsKeywords()
+            end
+        end
+    end
+end
+
+-- Add player to summon queue
+function TRS:AddToSummonQueue(playerName)
+    -- Check if player is already in queue
+    for _, entry in ipairs(db.summonQueue) do
+        if entry.name == playerName then
+            return -- Already in queue
+        end
+    end
+
+    -- Add to queue
+    table.insert(db.summonQueue, {
+        name = playerName,
+        timestamp = time()
+    })
+
+    -- Play sound if enabled
+    if db.settings.playSoundOnAdd then
+        PlaySound(8959) -- SOUNDKIT.RAID_WARNING
+    end
+
+    -- Update UI if visible
+    if TRS.mainFrame and TRS.mainFrame:IsShown() then
+        TRS:UpdateSummonQueue()
+    end
+
+    -- Broadcast the updated queue to raid
+    TRS:SendQueueData()
+
+    print("|cFF00FF00Timber's Raid Summoner:|r Added " .. playerName .. " to summon queue")
+end
+
+-- Remove player from summon queue
+function TRS:RemoveFromSummonQueue(playerName, reason)
+    for i, entry in ipairs(db.summonQueue) do
+        if entry.name == playerName then
+            table.remove(db.summonQueue, i)
+
+            -- Clear summoning state if they were being summoned
+            TRS:ClearSummoningState(playerName)
+
+            -- Broadcast removal with reason
+            local removerName = UnitName("player")
+            TRS:BroadcastQueueRemoval(playerName, removerName, reason or "manual")
+
+            -- Update UI if visible
+            if TRS.mainFrame and TRS.mainFrame:IsShown() then
+                TRS:UpdateSummonQueue()
+            end
+
+            -- Broadcast the updated queue to raid
+            TRS:SendQueueData()
+
+            print("|cFF00FF00Timber's Raid Summoner:|r Removed " .. playerName .. " from summon queue")
+            return
+        end
+    end
+end
+
+-- Parse chat message for keywords
+function TRS:ParseChatMessage(message, sender)
+    -- Normalize sender name (remove realm)
+    local playerName = strsplit("-", sender)
+
+    -- Check if message matches any keywords
+    local lowerMessage = string.lower(message)
+    for _, keyword in ipairs(db.keywords) do
+        local lowerKeyword = string.lower(keyword)
+        local matched = false
+
+        -- Check for special prefixes and patterns
+        if string.sub(lowerKeyword, 1, 1) == "*" then
+            -- Asterisk prefix: match if keyword appears anywhere in message
+            local searchTerm = string.sub(lowerKeyword, 2) -- Remove the *
+            local escapedTerm = searchTerm:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+            local success, result = pcall(string.find, lowerMessage, escapedTerm)
+            if success and result then
+                matched = true
+            end
+        elseif string.match(lowerKeyword, "^%^") or string.match(lowerKeyword, "%$$") then
+            -- User specified regex anchors (^ or $), use as pattern
+            local success, result = pcall(string.match, lowerMessage, lowerKeyword)
+            if success and result then
+                matched = true
+            end
+        else
+            -- Plain text keyword - must match entire message exactly
+            local exactPattern = "^" .. lowerKeyword:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1") .. "$"
+            local success, result = pcall(string.match, lowerMessage, exactPattern)
+            if success and result then
+                matched = true
+            end
+        end
+
+        if matched then
+            TRS:AddToSummonQueue(playerName)
+            return
+        end
+    end
+end
+
+-- Count soul shards in bags
+function TRS:CountSoulShards()
+    -- Use GetItemCount which works in all versions
+    -- Soul Shard item ID: 6265
+    local count = GetItemCount(6265, false) -- false = don't include bank
+    return count or 0
+end
+
+-- Update soul shard count display
+function TRS:UpdateShardCount()
+    if TRS.shardCountText then
+        local count = TRS:CountSoulShards()
+        TRS.shardCountText:SetText("Soul Shards: " .. count)
+    end
+end
+
+-- Request queue sync from raid members
+function TRS:RequestQueueSync()
+    if IsInRaid() or IsInGroup() then
+        local channel = IsInRaid() and "RAID" or "PARTY"
+        SendAddonMessageCompat("TRS", "SYNC_REQUEST", channel)
+    end
+end
+
+-- Send queue data to raid
+function TRS:SendQueueData(target)
+    local db = TimbersRaidSummonerDB
+    if not db or not db.summonQueue then return end
+
+    local channel = IsInRaid() and "RAID" or "PARTY"
+
+    -- Check if anyone is currently being summoned
+    local summoningPlayer = currentlySummoning or ""
+
+    -- Send queue count first
+    local countMsg = "SYNC_COUNT:" .. #db.summonQueue .. ":" .. summoningPlayer
+    SendAddonMessageCompat("TRS", countMsg, channel)
+
+    -- Send each queue entry
+    for i, entry in ipairs(db.summonQueue) do
+        local msg = "SYNC_ENTRY:" .. i .. ":" .. entry.name .. ":" .. (entry.timestamp or 0)
+        SendAddonMessageCompat("TRS", msg, channel)
+    end
+end
+
+-- Handle incoming addon messages
+function TRS:HandleAddonMessage(message, sender)
+    local db = TimbersRaidSummonerDB
+    if not db then return end
+
+    -- Don't process our own messages (strip realm suffix from sender)
+    local senderName = strsplit("-", sender)
+    if senderName == UnitName("player") then
+        return
+    end
+
+    if message == "SYNC_REQUEST" then
+        -- Someone requested queue sync, send our data
+        TRS:SendQueueData()
+    elseif string.match(message, "^SYNC_COUNT:") then
+        -- Receiving queue sync
+        local count, summoningPlayer = string.match(message, "^SYNC_COUNT:(%d+):(.*)$")
+        count = tonumber(count) or 0
+
+        -- Store the summoning player info
+        TRS.receivedSummoningPlayer = summoningPlayer ~= "" and summoningPlayer or nil
+        TRS.receivedQueue = {}
+        TRS.expectedQueueSize = count
+    elseif string.match(message, "^SYNC_ENTRY:") then
+        -- Receiving a queue entry
+        local index, name, timestamp = string.match(message, "^SYNC_ENTRY:(%d+):([^:]+):(%d+)$")
+        index = tonumber(index)
+        timestamp = tonumber(timestamp)
+
+        if TRS.receivedQueue and index then
+            TRS.receivedQueue[index] = {
+                name = name,
+                timestamp = timestamp
+            }
+
+            -- Check if we've received all entries
+            if #TRS.receivedQueue == TRS.expectedQueueSize then
+                TRS:MergeReceivedQueue()
+            end
+        end
+    elseif string.match(message, "^SUMMONING:") then
+        -- Receiving summoning state update
+        local playerName, stateStr, summonerName = string.match(message, "^SUMMONING:([^:]+):(%d+):(.*)$")
+        local isSummoning = stateStr == "1"
+
+        if playerName then
+            -- Update UI for both panes
+            TRS:UpdateSummoningStateUI(playerName, isSummoning, summonerName)
+        end
+    elseif string.match(message, "^REMOVED:") then
+        -- Receiving queue removal notification
+        local removedPlayer, removerName, reason = string.match(message, "^REMOVED:([^:]+):([^:]+):([^:]+)$")
+
+        if removedPlayer and removerName and reason then
+            -- Remove from local queue
+            for i, entry in ipairs(db.summonQueue) do
+                if entry.name == removedPlayer then
+                    table.remove(db.summonQueue, i)
+
+                    -- Clear summoning state if they were being summoned
+                    TRS:ClearSummoningState(removedPlayer)
+
+                    -- Update UI if visible
+                    if TRS.mainFrame and TRS.mainFrame:IsShown() then
+                        TRS:UpdateSummonQueue()
+                    end
+                    break
+                end
+            end
+
+            -- Check if current player is a warlock for chat message
+            local _, class = UnitClass("player")
+
+            if class == "WARLOCK" then
+                local msg
+                if reason == "timeout" then
+                    msg = "|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[WARNING]|r " .. removedPlayer .. " timed out of the summon queue"
+                elseif reason ~= "summoned" then
+                    msg = "|cFF00FF00Timber's Raid Summoner:|r " .. removedPlayer .. " was removed from the summoning queue by " .. removerName
+                end
+                if msg then
+                    print(msg)
+                end
+            end
+        end
+    end
+end
+
+-- Merge received queue with local queue
+function TRS:MergeReceivedQueue()
+    local db = TimbersRaidSummonerDB
+    if not db or not TRS.receivedQueue then return end
+
+    -- Merge entries from received queue
+    for _, receivedEntry in ipairs(TRS.receivedQueue) do
+        local exists = false
+        -- Check if this player is already in our queue
+        for _, localEntry in ipairs(db.summonQueue) do
+            if localEntry.name == receivedEntry.name then
+                exists = true
+                -- Update timestamp if received one is older (was added first)
+                if receivedEntry.timestamp < localEntry.timestamp then
+                    localEntry.timestamp = receivedEntry.timestamp
+                end
+                break
+            end
+        end
+
+        -- Add if not already in queue
+        if not exists then
+            table.insert(db.summonQueue, receivedEntry)
+        end
+    end
+
+    -- Sort queue by timestamp (oldest first)
+    table.sort(db.summonQueue, function(a, b)
+        return (a.timestamp or 0) < (b.timestamp or 0)
+    end)
+
+    -- Update UI if visible
+    if TRS.mainFrame and TRS.mainFrame:IsShown() then
+        TRS:UpdateSummonQueue()
+
+        -- If someone is being summoned, mark it in the UI
+        if TRS.receivedSummoningPlayer and TRS.summonQueueFrame and TRS.summonQueueFrame.buttons then
+            for _, button in ipairs(TRS.summonQueueFrame.buttons) do
+                if button.playerName == TRS.receivedSummoningPlayer then
+                    button.isSummoning = true
+                    button.levelText:SetText("")
+                    button.classText:SetText("Summoning...")
+                    button.levelText:SetTextColor(1, 1, 0)
+                    button.classText:SetTextColor(1, 1, 0)
+                    break
+                end
+            end
+        end
+    end
+
+    -- Clear received data
+    TRS.receivedQueue = nil
+    TRS.expectedQueueSize = nil
+    TRS.receivedSummoningPlayer = nil
+end
+
+-- Clean up expired summon queue entries
+function TRS:CleanupExpiredQueue()
+    local db = TimbersRaidSummonerDB
+    if not db or not db.summonQueue then return end
+
+    local currentTime = time()
+    local removedAny = false
+
+    -- Check queue in reverse order so we can remove safely
+    for i = #db.summonQueue, 1, -1 do
+        local entry = db.summonQueue[i]
+        local timeInQueue = currentTime - (entry.timestamp or 0)
+
+        -- Check if this entry is currently being summoned
+        local isSummoning = false
+        if TRS.summonQueueFrame and TRS.summonQueueFrame.buttons then
+            for _, button in ipairs(TRS.summonQueueFrame.buttons) do
+                if button.playerName == entry.name and button.isSummoning then
+                    isSummoning = true
+                    break
+                end
+            end
+        end
+
+        -- Remove if expired and not currently being summoned
+        if timeInQueue >= QUEUE_TIMEOUT and not isSummoning then
+            -- Check if current player is a warlock for chat message
+            local _, class = UnitClass("player")
+            if class == "WARLOCK" then
+                print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[WARNING]|r " .. entry.name .. " timed out of the summon queue")
+            end
+
+            -- Broadcast that this player was removed due to timeout so other clients update
+            local removerName = UnitName("player") or ""
+            TRS:BroadcastQueueRemoval(entry.name, removerName, "timeout")
+
+            table.remove(db.summonQueue, i)
+            removedAny = true
+        end
+    end
+
+    -- Update UI if anything was removed
+    if removedAny then
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateSummonQueue()
+        end
+
+        -- Broadcast the updated queue after removals so all clients can resync
+        TRS:SendQueueData()
+    end
+end
+
+-- Event handler
+local eventFrame = CreateFrame("Frame")
+eventFrame:RegisterEvent("ADDON_LOADED")
+eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
+eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_START")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_FAILED")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_STOP")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
+eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_UPDATE")
+eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
+eventFrame:RegisterEvent("BAG_UPDATE")
+eventFrame:RegisterEvent("CHAT_MSG_RAID")
+eventFrame:RegisterEvent("CHAT_MSG_RAID_LEADER")
+eventFrame:RegisterEvent("CHAT_MSG_SAY")
+eventFrame:RegisterEvent("CHAT_MSG_PARTY")
+eventFrame:RegisterEvent("CHAT_MSG_PARTY_LEADER")
+eventFrame:RegisterEvent("CHAT_MSG_GUILD")
+eventFrame:RegisterEvent("CHAT_MSG_ADDON")
+eventFrame:SetScript("OnEvent", function(self, event, ...)
+    if event == "ADDON_LOADED" then
+        local loadedAddon = ...
+        if loadedAddon == addonName then
+            Initialize()
+            -- In Classic Era, addon message prefixes don't need to be registered
+            -- Request queue sync from raid after a short delay
+            C_Timer.After(2, function()
+                TRS:RequestQueueSync()
+            end)
+        end
+    elseif event == "RAID_ROSTER_UPDATE" or event == "GROUP_ROSTER_UPDATE" then
+        -- Check if player left the group
+        if not IsInRaid() and not IsInGroup() then
+            -- Clear the summon queue when leaving group
+            if db and db.summonQueue and #db.summonQueue > 0 then
+                db.summonQueue = {}
+                if TRS.mainFrame and TRS.mainFrame:IsShown() then
+                    TRS:UpdateSummonQueue()
+                end
+            end
+        end
+
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
+    elseif event == "CHAT_MSG_ADDON" then
+        local prefix, message, channel, sender = ...
+        if prefix == "TRS" then
+            TRS:HandleAddonMessage(message, sender)
+        end
+    elseif event == "UNIT_SPELLCAST_START" then
+        local unitTarget, castGUID, spellID = ...
+        if unitTarget == "player" then
+            local spellName = GetSpellInfo(spellID)
+            if spellName == "Ritual of Summoning" and currentlySummoning and summonFromQueue then
+                local db = TimbersRaidSummonerDB
+
+                -- Send raid message if enabled
+                if db.settings.sendRaidMessage then
+                    local raidMsg = db.settings.raidMessage or "Summoning %s"
+                    raidMsg = string.gsub(raidMsg, "%%s", currentlySummoning)
+                    SendChatMessage(raidMsg, IsInRaid() and "RAID" or "PARTY")
+                end
+
+                -- Send whisper if enabled
+                if db.settings.autoWhisper then
+                    local whisperMsg = db.settings.whisperMessage or "Summoning you now"
+                    SendChatMessage(whisperMsg, "WHISPER", nil, currentlySummoning)
+                end
+            end
+        end
+    elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_STOP" or
+           event == "UNIT_SPELLCAST_INTERRUPTED" then
+        local unitTarget, castGUID, spellID = ...
+        if unitTarget == "player" then
+            local spellName = GetSpellInfo(spellID)
+            if spellName == "Ritual of Summoning" then
+                if event == "UNIT_SPELLCAST_FAILED" then
+                    print("|cFFFF0000Ritual of Summoning failed!|r")
+                end
+                -- Clear summoning state when cast is cancelled/stopped/interrupted
+                if currentlySummoning then
+                    TRS:ClearSummoningState(currentlySummoning)
+                    currentlySummoning = nil
+                end
+            end
+        end
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local unitTarget, castGUID, spellID = ...
+        if unitTarget == "player" then
+            local spellName = GetSpellInfo(spellID)
+            if spellName == "Ritual of Summoning" then
+                -- Cast succeeded, about to transition to channel
+                -- Store current shard count to compare later
+                summonStartShardCount = TRS:CountSoulShards()
+            end
+        end
+    elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
+        local unitTarget, castGUID, spellID = ...
+        if unitTarget == "player" then
+            local spellName = GetSpellInfo(spellID)
+            if spellName == "Ritual of Summoning" then
+                -- Channel started - keep player in queue showing "Summoning..."
+                -- They'll be removed if shards decrease or timeout expires
+                summonChannelActive = true
+            end
+        end
+    elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+        local unitTarget, castGUID, spellID = ...
+        if unitTarget == "player" then
+            local spellName = GetSpellInfo(spellID)
+            if spellName == "Ritual of Summoning" and summonChannelActive then
+                summonChannelActive = false
+
+                -- Check if shard count decreased (summon successful)
+                local currentShardCount = TRS:CountSoulShards()
+                local shardsUsed = summonStartShardCount - currentShardCount
+
+                if currentlySummoning then
+                    if shardsUsed >= 1 then
+                        -- Shard was consumed - summon was successful
+                        TRS:ClearSummoningState(currentlySummoning)
+                        TRS:RemoveFromSummonQueue(currentlySummoning, "summoned")
+                    else
+                        -- No shard consumed - summon was interrupted/failed
+                        TRS:ClearSummoningState(currentlySummoning)
+                    end
+                    currentlySummoning = nil
+                end
+                summonStartShardCount = 0
+            end
+        end
+    elseif event == "UI_ERROR_MESSAGE" then
+        local messageType, message = ...
+        -- Check if it's related to summoning
+        if message and (string.find(message, "summon") or string.find(message, "Summon") or
+                       string.find(message, "range") or string.find(message, "mana") or
+                       string.find(message, "shard")) then
+            print("|cFFFF0000Summon Error:|r " .. message)
+        end
+    elseif event == "BAG_UPDATE" then
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateShardCount()
+        end
+    elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" or
+           event == "CHAT_MSG_SAY" or event == "CHAT_MSG_PARTY" or
+           event == "CHAT_MSG_PARTY_LEADER" or event == "CHAT_MSG_GUILD" then
+        local message, sender = ...
+        if sender and sender ~= UnitName("player") then
+            TRS:ParseChatMessage(message, sender)
+        end
+    end
+end)
+
+-- Set up timer to check for expired queue entries
+local timeSinceLastCheck = 0
+eventFrame:SetScript("OnUpdate", function(self, elapsed)
+    timeSinceLastCheck = timeSinceLastCheck + elapsed
+
+    -- Check every 5 seconds
+    if timeSinceLastCheck >= 5 then
+        timeSinceLastCheck = 0
+        TRS:CleanupExpiredQueue()
+    end
+end)

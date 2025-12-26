@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="TIMBERSRAIDSUMMONER_TOGGLE" header="TIMBERSRAIDSUMMONER" category="ADDONS">
+    DEFAULT_CHAT_FRAME.editBox:SetText("/trs") ChatEdit_SendText(DEFAULT_CHAT_FRAME.editBox, 0)
+  </Binding>
+</Bindings>

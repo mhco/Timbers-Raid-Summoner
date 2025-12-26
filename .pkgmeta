@@ -1,0 +1,7 @@
+package-as: TimbersRaidSummoner
+enable-nolib-creation: no
+
+ignore:
+    - Docs
+    - README.md
+    - .travis.yml
