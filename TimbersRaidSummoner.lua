@@ -1694,7 +1694,6 @@ eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
 eventFrame:RegisterEvent("BAG_UPDATE")
 eventFrame:RegisterEvent("CHAT_MSG_RAID")
 eventFrame:RegisterEvent("CHAT_MSG_RAID_LEADER")
-eventFrame:RegisterEvent("CHAT_MSG_SAY")
 eventFrame:RegisterEvent("CHAT_MSG_PARTY")
 eventFrame:RegisterEvent("CHAT_MSG_PARTY_LEADER")
 eventFrame:RegisterEvent("CHAT_MSG_GUILD")
@@ -1825,8 +1824,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             TRS:UpdateShardCount()
         end
     elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" or
-           event == "CHAT_MSG_SAY" or event == "CHAT_MSG_PARTY" or
-           event == "CHAT_MSG_PARTY_LEADER" or event == "CHAT_MSG_GUILD" then
+           event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER" or
+           event == "CHAT_MSG_GUILD" then
         local message, sender = ...
         if sender and sender ~= UnitName("player") then
             TRS:ParseChatMessage(message, sender)
