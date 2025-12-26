@@ -95,6 +95,27 @@ StaticPopupDialogs["TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS"] = {
     preferredIndex = 3,
 }
 
+-- Check if player can summon (is warlock with Ritual of Summoning)
+function TRS:CanSummon()
+    local _, class = UnitClass("player")
+    if class ~= "WARLOCK" then
+        return false
+    end
+    
+    -- Check if player has Ritual of Summoning spell
+    local spellName = GetSpellInfo(698) -- Ritual of Summoning spell ID
+    if not spellName then
+        return false
+    end
+    
+    -- Check if the player knows the spell
+    if IsSpellKnown(698) then
+        return true
+    end
+    
+    return false
+end
+
 -- Initialize the addon
 local function Initialize()
     db = TimbersRaidSummonerDB
@@ -560,10 +581,12 @@ function TRS:UpdateRaidList()
     for i = 1, numMembers do
         local name, rank, subgroup, level, class, classToken
         local unitId
+        local isOnline = true
         if isRaid then
             name, rank, subgroup, level, class = GetRaidRosterInfo(i)
             unitId = "raid"..i
             _, classToken = UnitClass(unitId)
+            isOnline = UnitIsConnected(unitId)
             -- Fallback to UnitLevel if GetRaidRosterInfo didn't provide it
             if not level or level == 0 then
                 level = UnitLevel(unitId)
@@ -575,12 +598,14 @@ function TRS:UpdateRaidList()
                 level = UnitLevel("player")
                 unitId = "player"
                 subgroup = 1
+                isOnline = true
             elseif i <= numMembers then
                 unitId = "party"..(i-1)
                 name = UnitName(unitId)
                 class, classToken = UnitClass(unitId)
                 level = UnitLevel(unitId)
                 subgroup = 1
+                isOnline = UnitIsConnected(unitId)
             end
         end
 
@@ -590,7 +615,8 @@ function TRS:UpdateRaidList()
                 unitId = unitId,
                 level = level,
                 class = class,
-                classToken = classToken
+                classToken = classToken,
+                isOnline = isOnline
             })
         end
     end
@@ -726,6 +752,7 @@ function TRS:UpdateRaidList()
                 button.storedLevel = member.level
                 button.storedClass = member.class
                 button.storedClassToken = member.classToken
+                button.storedIsOnline = member.isOnline
 
                 -- Set click handler with current unitId and name
                 button:SetScript("PreClick", function(self, btn)
@@ -734,6 +761,16 @@ function TRS:UpdateRaidList()
                             self:SetAttribute("type1", "target")
                             self:SetAttribute("unit", self.unitId)
                         elseif btn == "RightButton" then
+                            -- Check if player can summon
+                            if not TRS:CanSummon() then
+                                return
+                            end
+                            
+                            -- Check if target is online
+                            if not self.storedIsOnline then
+                                return
+                            end
+                            
                             currentlySummoning = self.playerName
                             summonFromQueue = false
                             -- Update UI for both panes locally
@@ -764,13 +801,22 @@ function TRS:UpdateRaidList()
                     -- Show normal level/class info
                     button.levelText:SetWidth(25)
                     button.classText:SetWidth(60)
-                    button.levelText:SetText(tostring(member.level or 0))
-                    button.classText:SetText(member.class or member.classToken or "")
                     
-                    -- Set class color using the English token
-                    local r, g, b = TRS:GetClassColor(member.classToken)
-                    button.levelText:SetTextColor(r, g, b)
-                    button.classText:SetTextColor(r, g, b)
+                    -- Check if player is offline
+                    if not member.isOnline then
+                        button.levelText:SetText("")
+                        button.classText:SetText("Offline")
+                        button.levelText:SetTextColor(0.5, 0.5, 0.5)
+                        button.classText:SetTextColor(0.5, 0.5, 0.5)
+                    else
+                        button.levelText:SetText(tostring(member.level or 0))
+                        button.classText:SetText(member.class or member.classToken or "")
+                        
+                        -- Set class color using the English token
+                        local r, g, b = TRS:GetClassColor(member.classToken)
+                        button.levelText:SetTextColor(r, g, b)
+                        button.classText:SetTextColor(r, g, b)
+                    end
                 end
                 
                 -- Name always gets class color
@@ -953,6 +999,16 @@ function TRS:UpdateSummonQueue()
                         self:SetAttribute("type1", "target")
                         self:SetAttribute("unit", targetUnit)
                     elseif btn == "RightButton" then
+                        -- Check if player can summon
+                        if not TRS:CanSummon() then
+                            return
+                        end
+                        
+                        -- Check if target is online
+                        if not UnitIsConnected(targetUnit) then
+                            return
+                        end
+                        
                         -- Check mana before attempting to summon
                         local currentMana = UnitPower("player", 0) -- 0 is mana
                         if currentMana < 300 then
@@ -994,6 +1050,7 @@ function TRS:UpdateSummonQueue()
         local classToken = nil
         local level = nil
         local class = nil
+        local isOnline = true
         local numMembers = GetNumGroupMembers()
         local isRaid = IsInRaid()
 
@@ -1002,6 +1059,7 @@ function TRS:UpdateSummonQueue()
                 if UnitName("raid"..j) == playerName then
                     class, classToken = UnitClass("raid"..j)
                     level = UnitLevel("raid"..j)
+                    isOnline = UnitIsConnected("raid"..j)
                     break
                 end
             end
@@ -1009,11 +1067,13 @@ function TRS:UpdateSummonQueue()
             if UnitName("player") == playerName then
                 class, classToken = UnitClass("player")
                 level = UnitLevel("player")
+                isOnline = true
             else
                 for j = 1, numMembers - 1 do
                     if UnitName("party"..j) == playerName then
                         class, classToken = UnitClass("party"..j)
                         level = UnitLevel("party"..j)
+                        isOnline = UnitIsConnected("party"..j)
                         break
                     end
                 end
@@ -1041,13 +1101,22 @@ function TRS:UpdateSummonQueue()
             -- Show normal level/class info
             button.levelText:SetWidth(25)
             button.classText:SetWidth(60)
-            button.levelText:SetText(tostring(level or 0))
-            button.classText:SetText(class or classToken or "")
+            
+            -- Check if player is offline
+            if not isOnline then
+                button.levelText:SetText("")
+                button.classText:SetText("Offline")
+                button.levelText:SetTextColor(0.5, 0.5, 0.5)
+                button.classText:SetTextColor(0.5, 0.5, 0.5)
+            else
+                button.levelText:SetText(tostring(level or 0))
+                button.classText:SetText(class or classToken or "")
 
-            -- Set class color
-            local r, g, b = TRS:GetClassColor(classToken)
-            button.levelText:SetTextColor(r, g, b)
-            button.classText:SetTextColor(r, g, b)
+                -- Set class color
+                local r, g, b = TRS:GetClassColor(classToken)
+                button.levelText:SetTextColor(r, g, b)
+                button.classText:SetTextColor(r, g, b)
+            end
         end
 
         -- Name always gets class color
@@ -1707,6 +1776,7 @@ local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+eventFrame:RegisterEvent("UNIT_CONNECTION")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_START")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_FAILED")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_STOP")
@@ -1748,6 +1818,13 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
         if TRS.mainFrame and TRS.mainFrame:IsShown() then
             TRS:UpdateRaidList()
+            TRS:UpdateSummonQueue()
+        end
+    elseif event == "UNIT_CONNECTION" then
+        -- Update UI when a unit connects or disconnects
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+            TRS:UpdateSummonQueue()
         end
     elseif event == "CHAT_MSG_ADDON" then
         local prefix, message, channel, sender = ...
