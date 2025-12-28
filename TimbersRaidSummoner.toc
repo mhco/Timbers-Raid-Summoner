@@ -1,8 +1,8 @@
-## Interface: 11508
+## Interface: 11508, 20505
 ## Title: Timber's Raid Summoner
 ## Notes: Manages raid summon requests with automated keyword detection
 ## Author: Timbervale
-## Version: 2025.12.26
+## Version: 2025.12.28
 ## SavedVariables: TimbersRaidSummonerDB
 
 TimbersRaidSummoner.lua

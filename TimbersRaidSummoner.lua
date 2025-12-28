@@ -6,7 +6,7 @@ local TRS = {}
 _G[addonName] = TRS
 
 -- Version
-TRS.VERSION = "2025.12.26"
+TRS.VERSION = "2025.12.28"
 
 -- Compatibility wrapper for SendAddonMessage
 -- Classic Era has C_ChatInfo.SendAddonMessage but it requires registration
@@ -47,14 +47,19 @@ TimbersRaidSummonerDB = TimbersRaidSummonerDB or {
     keywords = {"*123"},
     settings = {
         playSoundOnAdd = true,
+        showToastNotification = true, -- Show toast notification when someone requests a summon
         autoWhisper = false,
         sendRaidMessage = true,
         raidMessage = "Summoning %s, please help click!",
+        sendSayMessage = false,
+        sayMessage = "Summoning %s, please help click!",
         whisperMessage = "Summons incoming. Be ready to accept it. If you don't receive it within 30 seconds, let me know!",
         checkMana = false,
         checkShards = false,
         shareList = false,
-        shamanColorVanilla = true -- true = pink (vanilla), false = blue (TBC+)
+        shamanColorVanilla = true, -- true = pink (vanilla), false = blue (TBC+)
+        showRangeOpacity = true, -- Show reduced opacity for out-of-range raid members
+        showLoadedMessage = true -- Show "addon loaded" message on login
     },
     summonQueue = {}
 }
@@ -65,6 +70,10 @@ local currentlySummoning = nil -- Track who we're currently summoning
 local summonFromQueue = false -- Track if summon was initiated from queue
 local summonChannelActive = false -- Track if summon channel is active
 local summonStartShardCount = 0 -- Track shard count when summon starts
+local activeSummons = {} -- Track active summons: [summonerName] = targetName
+local wasChanneling = {} -- Track if someone was channeling last frame: [summonerName] = true/false
+local meetingStoneStartTime = nil -- Track when Meeting Stone channel started
+local meetingStoneTarget = nil -- Track who we're summoning via Meeting Stone
 
 -- Constants
 local QUEUE_TIMEOUT = 300 -- Time in seconds
@@ -75,6 +84,7 @@ TRS.raidListFrame = nil
 TRS.summonQueueFrame = nil
 TRS.settingsFrame = nil
 TRS.settingsVisible = false
+TRS.toastFrame = nil
 
 -- StaticPopup for restoring default keywords
 StaticPopupDialogs["TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS"] = {
@@ -119,13 +129,106 @@ end
 -- Initialize the addon
 local function Initialize()
     db = TimbersRaidSummonerDB
+    
+    -- Ensure new settings exist (for existing saved variables)
+    if db.settings.sendSayMessage == nil then
+        db.settings.sendSayMessage = false
+    end
+    if db.settings.sayMessage == nil then
+        db.settings.sayMessage = "Summoning %s, please help click!"
+    end
+    if db.settings.showLoadedMessage == nil then
+        db.settings.showLoadedMessage = true
+    end
+    if db.settings.showToastNotification == nil then
+        db.settings.showToastNotification = true
+    end
+    
     TRS:CreateMainFrame()
 
     -- Set up keybindings
     BINDING_HEADER_TIMBERSRAIDSUMMONER = "Timber's Raid Summoner"
     BINDING_NAME_TIMBERSRAIDSUMMONER_TOGGLE = "Toggle Timber's Raid Summoner Window"
 
-    print("|cFF00FF00Timber's Raid Summoner|r loaded. Type /trs or /timbersraidsummoner to toggle the interface.")
+    -- Show loaded message if enabled
+    if db.settings.showLoadedMessage then
+        print("|cFF00FF00Timber's Raid Summoner|r loaded. Type /trs or /timbersraidsummoner to toggle the interface.")
+    end
+end
+
+-- Create toast notification for new summon requests
+function TRS:CreateToastNotification()
+    if TRS.toastFrame then return end
+    
+    local toast = CreateFrame("Frame", "TimbersRaidSummonerToast", UIParent, "BackdropTemplate")
+    toast:SetSize(350, 80)
+    toast:SetPoint("CENTER", UIParent, "CENTER", 0, 150)
+    toast:SetFrameStrata("DIALOG")
+    toast:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true,
+        tileSize = 32,
+        edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 }
+    })
+    toast:SetBackdropColor(0, 0, 0, 0.9)
+    toast:EnableMouse(true)
+    toast:SetMovable(false)
+    toast:Hide()
+    
+    -- Make clickable
+    toast:SetScript("OnMouseDown", function(self)
+        TRS:ToggleFrame()
+        self:Hide()
+    end)
+    
+    -- Player name text
+    local nameText = toast:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    nameText:SetPoint("TOP", toast, "TOP", 0, -15)
+    nameText:SetTextColor(1, 0.82, 0, 1) -- Gold color
+    toast.nameText = nameText
+    
+    -- Request text
+    local requestText = toast:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    requestText:SetPoint("TOP", nameText, "BOTTOM", 0, -5)
+    requestText:SetText("has requested a summon")
+    requestText:SetTextColor(1, 1, 1, 1)
+    
+    -- Click instruction
+    local clickText = toast:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    clickText:SetPoint("BOTTOM", toast, "BOTTOM", 0, 15)
+    clickText:SetText("Click here to see the summoning queue")
+    clickText:SetTextColor(0.8, 0.8, 0.8, 1)
+    
+    -- Highlight on hover
+    toast:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(0.1, 0.1, 0.1, 0.95)
+    end)
+    
+    toast:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(0, 0, 0, 0.9)
+    end)
+    
+    TRS.toastFrame = toast
+end
+
+-- Show toast notification
+function TRS:ShowToast(playerName)
+    if not TRS.toastFrame then
+        TRS:CreateToastNotification()
+    end
+    
+    local toast = TRS.toastFrame
+    toast.nameText:SetText(playerName)
+    toast:Show()
+    
+    -- Auto-hide after 5 seconds
+    C_Timer.After(5, function()
+        if toast:IsShown() then
+            toast:Hide()
+        end
+    end)
 end
 
 -- Create the main frame with three scrollable columns
@@ -150,6 +253,99 @@ function TRS:CreateMainFrame()
     mainFrame:SetScript("OnDragStart", mainFrame.StartMoving)
     mainFrame:SetScript("OnDragStop", mainFrame.StopMovingOrSizing)
     mainFrame:Hide()
+    
+    -- OnUpdate to track active summons continuously
+    mainFrame:SetScript("OnUpdate", function(self, elapsed)
+        -- Update activeSummons table by checking all members for active casts/channels
+        local numMembers = GetNumGroupMembers()
+        local isRaid = IsInRaid()
+        local stateChanged = false  -- Track if we need to update UI
+        
+        if numMembers > 0 then
+            -- Check player first
+            local playerName = UnitName("player")
+            local channelName = UnitChannelInfo("player")
+            local castName = UnitCastingInfo("player")
+            local isCurrentlyChanneling = (channelName or castName) ~= nil
+            
+            if isCurrentlyChanneling then
+                local spellName = channelName or castName
+                local lowerName = string.lower(spellName)
+                if string.find(lowerName, "summon") or string.find(lowerName, "meeting") or string.find(lowerName, "ritual") then
+                    -- Only store target if this is a NEW channel (wasn't channeling last frame)
+                    if not wasChanneling[playerName] then
+                        local targetName = UnitName("playertarget")
+                        if targetName then
+                            activeSummons[playerName] = targetName
+                            stateChanged = true
+                        end
+                    end
+                    -- If already channeling, keep the existing target stored
+                else
+                    if activeSummons[playerName] then
+                        activeSummons[playerName] = nil
+                        stateChanged = true
+                    end
+                    wasChanneling[playerName] = false
+                end
+                wasChanneling[playerName] = true
+            else
+                if activeSummons[playerName] then
+                    activeSummons[playerName] = nil
+                    stateChanged = true
+                end
+                wasChanneling[playerName] = false
+            end
+            
+            -- Check other raid/party members
+            for j = 1, (isRaid and numMembers or numMembers - 1) do
+                local summoner = isRaid and "raid"..j or "party"..j
+                local summonerUnitName = UnitName(summoner)
+                
+                if summonerUnitName then
+                    channelName = UnitChannelInfo(summoner)
+                    castName = UnitCastingInfo(summoner)
+                    isCurrentlyChanneling = (channelName or castName) ~= nil
+                    
+                    if isCurrentlyChanneling then
+                        local spellName = channelName or castName
+                        local lowerName = string.lower(spellName)
+                        if string.find(lowerName, "summon") or string.find(lowerName, "meeting") or string.find(lowerName, "ritual") then
+                            -- Only store target if this is a NEW channel (wasn't channeling last frame)
+                            if not wasChanneling[summonerUnitName] then
+                                local targetName = UnitName(summoner .. "target")
+                                if targetName then
+                                    activeSummons[summonerUnitName] = targetName
+                                    stateChanged = true
+                                end
+                            end
+                            -- If already channeling, keep the existing target stored
+                        else
+                            if activeSummons[summonerUnitName] then
+                                activeSummons[summonerUnitName] = nil
+                                stateChanged = true
+                            end
+                            wasChanneling[summonerUnitName] = false
+                        end
+                        wasChanneling[summonerUnitName] = true
+                    else
+                        if activeSummons[summonerUnitName] then
+                            activeSummons[summonerUnitName] = nil
+                            stateChanged = true
+                        end
+                        wasChanneling[summonerUnitName] = false
+                    end
+                end
+            end
+        end
+        
+        -- Only update UI when channeling state actually changes
+        if stateChanged and TRS.mainFrame and TRS.mainFrame:IsShown() and not InCombatLockdown() then
+            TRS:UpdateRaidList()
+            TRS:UpdateSummonQueue()
+        end
+    end)
+
 
     TRS.mainFrame = mainFrame
 
@@ -229,7 +425,7 @@ function TRS:CreateRaidListColumn(parent)
 
     -- Container frame for border (includes scrollbar)
     local container = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-    container:SetSize(447, 494)
+    container:SetSize(448, 494)
     container:SetPoint("TOPLEFT", parent, "TOPLEFT", xOffset, yOffset - 20)
     container:SetBackdrop({
         edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -389,7 +585,7 @@ function TRS:CreateSettingsColumn(parent)
             TRS:UpdateSettingsKeywords()
         end
     end)
-    yPos = yPos - 30
+    yPos = yPos - 31
 
     -- Keywords list container with border
     local kwContainer = CreateFrame("Frame", nil, content, "BackdropTemplate")
@@ -397,7 +593,8 @@ function TRS:CreateSettingsColumn(parent)
     kwContainer:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
     kwContainer:SetBackdrop({
         edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1
+        edgeSize = 1,
+        insets = { left = 0, right = 0, top = 0, bottom = 0 }
     })
     kwContainer:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 
@@ -406,10 +603,10 @@ function TRS:CreateSettingsColumn(parent)
     kwBg:SetAllPoints(kwContainer)
     kwBg:SetColorTexture(0.1, 0.1, 0.1, 0.3)
 
-    -- Keywords list scroll frame (5px padding inside border)
+    -- Keywords list scroll frame (padding inside border to avoid overlap)
     local kwScrollFrame = CreateFrame("ScrollFrame", nil, kwContainer, "UIPanelScrollFrameTemplate")
-    kwScrollFrame:SetSize(286, 150)
-    kwScrollFrame:SetPoint("TOPLEFT", kwContainer, "TOPLEFT", 5, -5)
+    kwScrollFrame:SetSize(286, 148)
+    kwScrollFrame:SetPoint("TOPLEFT", kwContainer, "TOPLEFT", 5, -6)
 
     -- Content frame inside scroll frame
     local kwListFrame = CreateFrame("Frame", nil, kwScrollFrame)
@@ -452,6 +649,18 @@ function TRS:CreateSettingsColumn(parent)
     raidMsgCheckLabel:SetText("Send raid message when casting")
     yPos = yPos - 30
 
+    -- Send say message checkbox
+    local sayMsgCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    sayMsgCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    sayMsgCheck:SetChecked(db.settings.sendSayMessage)
+    sayMsgCheck:SetScript("OnClick", function(self)
+        db.settings.sendSayMessage = self:GetChecked()
+    end)
+    local sayMsgCheckLabel = sayMsgCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    sayMsgCheckLabel:SetPoint("LEFT", sayMsgCheck, "RIGHT", 5, 0)
+    sayMsgCheckLabel:SetText("Send a '/s' message when casting")
+    yPos = yPos - 30
+
     -- Auto whisper checkbox
     local whisperCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
     whisperCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
@@ -477,6 +686,22 @@ function TRS:CreateSettingsColumn(parent)
     raidMsgBox:SetText(db.settings.raidMessage)
     raidMsgBox:SetScript("OnTextChanged", function(self)
         db.settings.raidMessage = self:GetText()
+    end)
+    yPos = yPos - 35
+
+    -- Say message label
+    local sayMsgLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    sayMsgLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    sayMsgLabel:SetText("Say message:")
+    yPos = yPos - 20
+
+    local sayMsgBox = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    sayMsgBox:SetSize(300, 25)
+    sayMsgBox:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    sayMsgBox:SetAutoFocus(false)
+    sayMsgBox:SetText(db.settings.sayMessage or "Summoning %s")
+    sayMsgBox:SetScript("OnTextChanged", function(self)
+        db.settings.sayMessage = self:GetText()
     end)
     yPos = yPos - 35
 
@@ -521,6 +746,18 @@ function TRS:CreateSettingsColumn(parent)
     soundLabel:SetText("Play sound when player added to queue")
     yPos = yPos - 30
 
+    -- Show toast notification checkbox
+    local toastCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    toastCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    toastCheck:SetChecked(db.settings.showToastNotification)
+    toastCheck:SetScript("OnClick", function(self)
+        db.settings.showToastNotification = self:GetChecked()
+    end)
+    local toastLabel = toastCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    toastLabel:SetPoint("LEFT", toastCheck, "RIGHT", 5, 0)
+    toastLabel:SetText("Show popup notification when player added to queue")
+    yPos = yPos - 30
+
     -- Shaman color checkbox
     local shamanColorCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
     shamanColorCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
@@ -535,6 +772,34 @@ function TRS:CreateSettingsColumn(parent)
     local shamanColorLabel = shamanColorCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     shamanColorLabel:SetPoint("LEFT", shamanColorCheck, "RIGHT", 5, 0)
     shamanColorLabel:SetText("Use vanilla Shaman color (pink)")
+    yPos = yPos - 30
+
+    -- Range opacity checkbox
+    local rangeOpacityCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    rangeOpacityCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    rangeOpacityCheck:SetChecked(db.settings.showRangeOpacity)
+    rangeOpacityCheck:SetScript("OnClick", function(self)
+        db.settings.showRangeOpacity = self:GetChecked()
+        -- Refresh raid list to show/hide opacity
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
+    end)
+    local rangeOpacityLabel = rangeOpacityCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    rangeOpacityLabel:SetPoint("LEFT", rangeOpacityCheck, "RIGHT", 5, 0)
+    rangeOpacityLabel:SetText("Show range opacity (dim out-of-range members)")
+    yPos = yPos - 30
+
+    -- Show loaded message checkbox
+    local loadedMsgCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    loadedMsgCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    loadedMsgCheck:SetChecked(db.settings.showLoadedMessage)
+    loadedMsgCheck:SetScript("OnClick", function(self)
+        db.settings.showLoadedMessage = self:GetChecked()
+    end)
+    local loadedMsgLabel = loadedMsgCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    loadedMsgLabel:SetPoint("LEFT", loadedMsgCheck, "RIGHT", 5, 0)
+    loadedMsgLabel:SetText("Show 'addon loaded' message on login")
 
     TRS.settingsFrame = {
         frame = settingsFrame,
@@ -543,6 +808,45 @@ function TRS:CreateSettingsColumn(parent)
     }
 
     TRS:UpdateSettingsKeywords()
+end
+
+-- Lightweight refresh of raid list visuals (doesn't hide/reposition buttons)
+function TRS:RefreshRaidListVisuals()
+    if not TRS.raidListFrame or not TRS.raidListFrame.buttons then return end
+    
+    local buttons = TRS.raidListFrame.buttons
+    
+    -- Update only the visual state of visible buttons
+    for _, button in ipairs(buttons) do
+        if button:IsShown() and button.memberName then
+            local memberName = button.memberName
+            
+            -- Check if this member is being summoned
+            local isBeingSummoned = false
+            local summonerName = nil
+            for summoner, target in pairs(activeSummons) do
+                if target == memberName then
+                    isBeingSummoned = true
+                    summonerName = summoner
+                    break
+                end
+            end
+            
+            -- Update display
+            if button.isSummoning or isBeingSummoned then
+                button.levelText:SetText("Summoning...")
+                button.levelText:SetTextColor(0, 1, 0)
+            else
+                -- Restore original level text (stored when button was created)
+                if button.originalLevel then
+                    button.levelText:SetText(button.originalLevel)
+                    button.levelText:SetTextColor(1, 1, 1)
+                end
+            end
+            
+            button.summonerName = summonerName
+        end
+    end
 end
 
 -- Update raid members list
@@ -662,11 +966,40 @@ function TRS:UpdateRaidList()
 
             local button = buttons[buttonIndex]
             if not button then
-                button = CreateFrame("Button", nil, content, "SecureActionButtonTemplate")
+                button = CreateFrame("Button", "TRSRaidButton"..buttonIndex, content, "SecureUnitButtonTemplate")
                 button:SetSize(columnWidth, buttonHeight)
                 button:SetNormalTexture("Interface\\Buttons\\UI-Listbox-Highlight")
                 button:GetNormalTexture():SetAlpha(0.3)
                 button:SetHighlightTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+                
+                -- Register for clicks
+                button:RegisterForClicks("AnyUp")
+                button:EnableMouse(true)
+                
+                -- PostClick handler for UI updates (doesn't block secure actions)
+                button:SetScript("PostClick", function(self, btn)
+                    if btn == "RightButton" and self.playerName and TRS:CanSummon() and self.storedIsOnline then
+                        -- Don't allow clicking if already casting/channeling
+                        if UnitCastingInfo("player") or UnitChannelInfo("player") then
+                            return
+                        end
+                        
+                        -- Don't allow clicking if player already has a target
+                        if UnitExists("target") then
+                            return
+                        end
+                        
+                        -- Clear any previous summoning state before setting new one
+                        if currentlySummoning and currentlySummoning ~= self.playerName then
+                            TRS:ClearSummoningState(currentlySummoning)
+                        end
+                        
+                        -- Store who we want to summon, but don't set UI state yet
+                        -- Wait for UNIT_SPELLCAST_START to confirm the cast actually started
+                        currentlySummoning = self.playerName
+                        summonFromQueue = false
+                    end
+                end)
 
                 -- Name text (left-aligned)
                 local nameText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -688,9 +1021,6 @@ function TRS:UpdateRaidList()
                 classText:SetJustifyH("LEFT")
                 classText:SetWidth(60)
                 button.classText = classText
-
-                -- Click handlers
-                button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
                 
                 -- Add tooltip handlers
                 button:SetScript("OnEnter", function(self)
@@ -722,9 +1052,9 @@ function TRS:UpdateRaidList()
                         end
                         
                         -- Show who is summoning them if applicable
-                        if self.isSummoning then
+                        if self.summonerName then
                             GameTooltip:AddLine(" ", 1, 1, 1)
-                            local summonerText = "Being summoned by " .. (self.summonerName or "Unknown")
+                            local summonerText = "Being summoned by " .. self.summonerName
                             GameTooltip:AddLine(summonerText, 0, 1, 0)
                         end
                         
@@ -744,52 +1074,59 @@ function TRS:UpdateRaidList()
             button:SetPoint("TOPLEFT", content, "TOPLEFT", xPos, -buttonY)
 
             if member then
-                -- Store the unit ID and name on the button for PreClick
+                -- Store the unit ID and name on the button
                 button.unitId = member.unitId
                 button.playerName = member.name
+                button.memberName = member.name  -- For RefreshRaidListVisuals
                 
                 -- Store level, class, and classToken for later restoration
                 button.storedLevel = member.level
                 button.storedClass = member.class
                 button.storedClassToken = member.classToken
                 button.storedIsOnline = member.isOnline
+                button.originalLevel = tostring(member.level or 0)  -- For RefreshRaidListVisuals
 
-                -- Set click handler with current unitId and name
-                button:SetScript("PreClick", function(self, btn)
-                    if not InCombatLockdown() then
-                        if btn == "LeftButton" then
-                            self:SetAttribute("type1", "target")
-                            self:SetAttribute("unit", self.unitId)
-                        elseif btn == "RightButton" then
-                            -- Check if player can summon
-                            if not TRS:CanSummon() then
-                                return
-                            end
-                            
-                            -- Check if target is online
-                            if not self.storedIsOnline then
-                                return
-                            end
-                            
-                            currentlySummoning = self.playerName
-                            summonFromQueue = false
-                            -- Update UI for both panes locally
-                            TRS:UpdateSummoningStateUI(self.playerName, true, UnitName("player"))
-                            -- Broadcast summoning state
-                            TRS:BroadcastSummoningState(self.playerName, true)
-                            self:SetAttribute("type1", "target")
-                            self:SetAttribute("unit", self.unitId)
-                            self:SetAttribute("type2", "spell")
-                            self:SetAttribute("spell", "Ritual of Summoning")
-                        end
-                    end
-                end)
+                -- Set unit attribute and click behaviors
+                if not InCombatLockdown() then
+                    button:SetAttribute("unit", member.unitId)
+                    button:SetAttribute("type1", "target")  -- Left click = target
+                    button:SetAttribute("type2", "macro")   -- Right click = macro (for summoning)
+                    
+                    -- Get localized spell name for Ritual of Summoning
+                    local summonSpellName = GetSpellInfo(698) or "Ritual of Summoning"
+                    
+                    -- Build macro text - only include /s if not from queue (queue clicks handled in PostClick)
+                    local macroText = "/target " .. member.name .. "\n/cast " .. summonSpellName
+                    button:SetAttribute("macrotext2", macroText)
+                end
 
                 -- Set individual column texts
                 button.nameText:SetText(member.name)
                 
-                -- Only update level/class if not currently summoning
-                if button.isSummoning then
+                -- Check if this member is being summoned by anyone in activeSummons
+                local isBeingSummoned = false
+                local summonerName = nil
+                
+                for summoner, target in pairs(activeSummons) do
+                    if target == member.name then
+                        isBeingSummoned = true
+                        summonerName = summoner
+                        break
+                    end
+                end
+                
+                -- Update summoner name if detected via channeling (for tooltip)
+                if isBeingSummoned and summonerName then
+                    button.summonerName = summonerName
+                elseif not isBeingSummoned and currentlySummoning ~= member.name then
+                    button.summonerName = nil
+                end
+                
+                -- Check if this member is being summoned (either via addon tracking OR detected channeling)
+                local showSummoning = button.isSummoning or isBeingSummoned
+                
+                -- Only update level/class if not currently summoning or being summoned
+                if showSummoning then
                     -- Keep the "Summoning..." text
                     button.levelText:SetWidth(85)
                     button.classText:SetWidth(0)
@@ -822,6 +1159,17 @@ function TRS:UpdateRaidList()
                 -- Name always gets class color
                 local r, g, b = TRS:GetClassColor(member.classToken)
                 button.nameText:SetTextColor(r, g, b)
+
+                -- Set opacity based on range (if enabled)
+                if db.settings.showRangeOpacity then
+                    if UnitInRange(member.unitId) then
+                        button:SetAlpha(1.0)
+                    else
+                        button:SetAlpha(0.3)
+                    end
+                else
+                    button:SetAlpha(1.0)
+                end
 
                 button:Show()
             else
@@ -861,11 +1209,15 @@ function TRS:UpdateSummonQueue()
     for i, entry in ipairs(db.summonQueue) do
         local button = buttons[i]
         if not button then
-            button = CreateFrame("Button", nil, content, "SecureActionButtonTemplate")
+            button = CreateFrame("Button", "TRSQueueButton"..i, content, "SecureUnitButtonTemplate")
             button:SetSize(200, buttonHeight)
             button:SetNormalTexture("Interface\\Buttons\\UI-Listbox-Highlight")
             button:GetNormalTexture():SetAlpha(0.3)
             button:SetHighlightTexture("Interface\\Buttons\\UI-Listbox-Highlight")
+            
+            -- Register for clicks
+            button:RegisterForClicks("AnyUp")
+            button:EnableMouse(true)
 
             -- Name text (left-aligned)
             local nameText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -889,7 +1241,8 @@ function TRS:UpdateSummonQueue()
             button.classText = classText
 
             -- Register for all mouse buttons
-            button:RegisterForClicks("LeftButtonUp", "RightButtonUp", "MiddleButtonUp")
+            button:RegisterForClicks("AnyUp")
+            button:EnableMouse(true)
 
             -- Function to update tooltip content
             local function UpdateTooltipContent(self)
@@ -899,6 +1252,40 @@ function TRS:UpdateSummonQueue()
 
                 -- Show player name
                 GameTooltip:AddLine(self.playerName, 1, 1, 1)
+
+                -- Find the player's unit ID to get their zone
+                local playerName = self.playerName
+                local numMembers = GetNumGroupMembers()
+                local isRaid = IsInRaid()
+                local zone = "Unknown"
+                
+                if isRaid then
+                    for j = 1, numMembers do
+                        if UnitName("raid"..j) == playerName then
+                            local name, rank, subgroup, level, class, fileName, raidZone = GetRaidRosterInfo(j)
+                            zone = raidZone or "Unknown"
+                            break
+                        end
+                    end
+                else
+                    if UnitName("player") == playerName then
+                        zone = GetRealZoneText() or "Unknown"
+                    else
+                        for j = 1, numMembers - 1 do
+                            local partyUnit = "party"..j
+                            if UnitName(partyUnit) == playerName then
+                                zone = GetRealZoneText() or "Unknown"
+                                break
+                            end
+                        end
+                    end
+                end
+                
+                -- Show zone
+                GameTooltip:AddLine(zone, 0.8, 0.8, 0.8)
+                
+                -- Blank line
+                GameTooltip:AddLine(" ", 1, 1, 1)
 
                 -- Show timestamp
                 local timestamp = self.queueEntry.timestamp or 0
@@ -919,9 +1306,9 @@ function TRS:UpdateSummonQueue()
                 end
 
                 -- Show who is summoning them if applicable
-                if self.isSummoning then
+                if self.summonerName then
                     GameTooltip:AddLine(" ", 1, 1, 1)
-                    local summonerText = "Being summoned by " .. (self.summonerName or "Unknown")
+                    local summonerText = "Being summoned by " .. self.summonerName
                     GameTooltip:AddLine(summonerText, 0, 1, 0)
                 end
 
@@ -960,21 +1347,70 @@ function TRS:UpdateSummonQueue()
         -- Store player name and index for lookup
         button.playerName = entry.name
         button.queueIndex = i
+        
+        -- Find the unit for this player
+        local targetUnit = nil
+        local numMembers = GetNumGroupMembers()
+        local isRaid = IsInRaid()
+        
+        if isRaid then
+            for j = 1, numMembers do
+                if UnitName("raid"..j) == entry.name then
+                    targetUnit = "raid"..j
+                    break
+                end
+            end
+        else
+            if UnitName("player") == entry.name then
+                targetUnit = "player"
+            else
+                for j = 1, numMembers - 1 do
+                    if UnitName("party"..j) == entry.name then
+                        targetUnit = "party"..j
+                        break
+                    end
+                end
+            end
+        end
+        
+        -- Set unit attribute and click behaviors
+        if targetUnit and not InCombatLockdown() then
+            button:SetAttribute("unit", targetUnit)
+            button:SetAttribute("type1", "target")  -- Left click = target
+            button:SetAttribute("type2", "macro")   -- Right click = macro (for summoning)
+            
+            -- Get localized spell name for Ritual of Summoning
+            local summonSpellName = GetSpellInfo(698) or "Ritual of Summoning"
+            
+            -- Build macro text - include /s message if enabled
+            local macroText = ""
+            if db.settings.sendSayMessage then
+                local sayMsg = db.settings.sayMessage or "Summoning %s"
+                sayMsg = string.gsub(sayMsg, "%%s", entry.name)
+                macroText = "/s " .. sayMsg .. "\n"
+            end
+            macroText = macroText .. "/target " .. entry.name .. "\n/cast " .. summonSpellName
+            
+            button:SetAttribute("macrotext2", macroText)
+        end
 
-        -- Handle middle-click in PostClick (after secure actions)
+        -- Handle clicks with PostClick for UI updates
         button:SetScript("PostClick", function(self, btn)
             if btn == "MiddleButton" then
                 TRS:RemoveFromSummonQueue(self.playerName)
-            end
-        end)
-
-        button:SetScript("PreClick", function(self, btn)
-            local playerName = self.playerName
-            if not InCombatLockdown() then
-                -- Try to find the unit
+            elseif btn == "RightButton" then
+                local playerName = self.playerName
+                
+                -- Check if player can summon
+                if not TRS:CanSummon() then
+                    return
+                end
+                
+                -- Find the unit to check online status
                 local numMembers = GetNumGroupMembers()
                 local isRaid = IsInRaid()
                 local targetUnit = nil
+                
                 if isRaid then
                     for j = 1, numMembers do
                         if UnitName("raid"..j) == playerName then
@@ -994,52 +1430,31 @@ function TRS:UpdateSummonQueue()
                         end
                     end
                 end
-                if targetUnit then
-                    if btn == "LeftButton" then
-                        self:SetAttribute("type1", "target")
-                        self:SetAttribute("unit", targetUnit)
-                    elseif btn == "RightButton" then
-                        -- Check if player can summon
-                        if not TRS:CanSummon() then
-                            return
-                        end
-                        
-                        -- Check if target is online
-                        if not UnitIsConnected(targetUnit) then
-                            return
-                        end
-                        
-                        -- Check mana before attempting to summon
-                        local currentMana = UnitPower("player", 0) -- 0 is mana
-                        if currentMana < 300 then
-                            print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r Not enough mana to summon (need 300 mana)")
-                            return
-                        end
-
-                        -- Check if target is in the same group
-                        if not targetUnit then
-                            print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r " .. playerName .. " is not in your group")
-                            return
-                        end
-
-                        -- Check if player has a target
-                        if not UnitExists("target") then
-                            print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r You must have a target to summon")
-                            return
-                        end
-
-                        currentlySummoning = playerName
-                        summonFromQueue = true
-                        -- Update UI for both panes locally
-                        TRS:UpdateSummoningStateUI(playerName, true, UnitName("player"))
-                        -- Broadcast summoning state
-                        TRS:BroadcastSummoningState(playerName, true)
-                        self:SetAttribute("type1", "target")
-                        self:SetAttribute("unit", targetUnit)
-                        self:SetAttribute("type2", "spell")
-                        self:SetAttribute("spell", "Ritual of Summoning")
-                    end
+                
+                if not targetUnit then
+                    print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r " .. playerName .. " is not in your group")
+                    return
                 end
+                
+                if not UnitIsConnected(targetUnit) then
+                    return
+                end
+                
+                local currentMana = UnitPower("player", 0)
+                if currentMana < 300 then
+                    print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r Not enough mana to summon (need 300 mana)")
+                    return
+                end
+
+                if not UnitExists("target") then
+                    print("|cFF00FF00Timber's Raid Summoner:|r |cFFFF0000[ERROR]|r You must have a target to summon")
+                    return
+                end
+
+                currentlySummoning = playerName
+                summonFromQueue = true
+                TRS:UpdateSummoningStateUI(playerName, true, UnitName("player"))
+                TRS:BroadcastSummoningState(playerName, true)
             end
         end)
 
@@ -1087,9 +1502,31 @@ function TRS:UpdateSummonQueue()
 
         -- Set individual column texts
         button.nameText:SetText(playerName)
+        
+        -- Check if someone is summoning this player (use shared activeSummons table)
+        local isBeingSummoned = false
+        local summonerName = nil
+        
+        for summoner, target in pairs(activeSummons) do
+            if target == playerName then
+                isBeingSummoned = true
+                summonerName = summoner
+                break
+            end
+        end
+        
+        -- Update summoner name if detected via channeling (for tooltip)
+        if isBeingSummoned and summonerName then
+            button.summonerName = summonerName
+        elseif not isBeingSummoned and currentlySummoning ~= playerName then
+            button.summonerName = nil
+        end
+        
+        -- Check if this member is being summoned (either via addon tracking OR detected channeling)
+        local showSummoning = button.isSummoning or isBeingSummoned
 
-        -- Only update level/class if not currently summoning
-        if button.isSummoning then
+        -- Only update level/class if not currently summoning or being summoned
+        if showSummoning then
             -- Keep the "Summoning..." text
             button.levelText:SetWidth(85)
             button.classText:SetWidth(0)
@@ -1448,15 +1885,27 @@ function TRS:AddToSummonQueue(playerName)
         PlaySound(8959) -- SOUNDKIT.RAID_WARNING
     end
 
-    -- Update UI if visible
+    -- Update UI if visible, otherwise show toast notification
     if TRS.mainFrame and TRS.mainFrame:IsShown() then
         TRS:UpdateSummonQueue()
+    else
+        -- Show toast notification when addon is not open (if enabled)
+        if db.settings.showToastNotification then
+            local _, class = UnitClass("player")
+            if class == "WARLOCK" then
+                TRS:ShowToast(playerName)
+            end
+        end
     end
 
     -- Broadcast the updated queue to raid
     TRS:SendQueueData()
 
-    print("|cFF00FF00Timber's Raid Summoner:|r Added " .. playerName .. " to summon queue")
+    -- Only show message for warlocks
+    local _, class = UnitClass("player")
+    if class == "WARLOCK" then
+        print("|cFF00FF00Timber's Raid Summoner:|r Added " .. playerName .. " to summon queue")
+    end
 end
 
 -- Remove player from summon queue
@@ -1784,7 +2233,6 @@ eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
-eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_UPDATE")
 eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
 eventFrame:RegisterEvent("BAG_UPDATE")
 eventFrame:RegisterEvent("CHAT_MSG_RAID")
@@ -1793,6 +2241,7 @@ eventFrame:RegisterEvent("CHAT_MSG_PARTY")
 eventFrame:RegisterEvent("CHAT_MSG_PARTY_LEADER")
 eventFrame:RegisterEvent("CHAT_MSG_GUILD")
 eventFrame:RegisterEvent("CHAT_MSG_ADDON")
+eventFrame:RegisterEvent("CHAT_MSG_SYSTEM")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
         local loadedAddon = ...
@@ -1831,40 +2280,75 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if prefix == "TRS" then
             TRS:HandleAddonMessage(message, sender)
         end
+    elseif event == "CHAT_MSG_SYSTEM" then
+        local systemMessage = ...
+        -- Check if this is a summon acceptance message
+        -- Common patterns: "PlayerName has accepted your summon."
+        -- Or in some locales it might be different
+        if currentlySummoning and summonFromQueue then
+            -- Try to match summon acceptance pattern
+            local playerName = string.match(systemMessage, "(.+) has accepted your summon")
+            if not playerName then
+                -- Try alternate pattern
+                playerName = string.match(systemMessage, "(.+) accepts your summon")
+            end
+            
+            if playerName and playerName == currentlySummoning then
+                -- Successfully summoned via Meeting Stone!
+                TRS:RemoveFromSummonQueue(currentlySummoning, "summoned")
+            end
+        end
     elseif event == "UNIT_SPELLCAST_START" then
         local unitTarget, castGUID, spellID = ...
         if unitTarget == "player" then
             local spellName = GetSpellInfo(spellID)
-            if spellName == "Ritual of Summoning" and currentlySummoning and summonFromQueue then
+            if spellName == "Ritual of Summoning" and currentlySummoning then
                 local db = TimbersRaidSummonerDB
+                
+                -- Cast actually started! Set the UI state and broadcast immediately
+                TRS:UpdateSummoningStateUI(currentlySummoning, true, UnitName("player"))
+                TRS:BroadcastSummoningState(currentlySummoning, true)
 
-                -- Send raid message if enabled
-                if db.settings.sendRaidMessage then
-                    local raidMsg = db.settings.raidMessage or "Summoning %s"
-                    raidMsg = string.gsub(raidMsg, "%%s", currentlySummoning)
-                    SendChatMessage(raidMsg, IsInRaid() and "RAID" or "PARTY")
-                end
+                -- Use C_Timer with delay to avoid "Interface action failed" error when sending chat
+                -- This breaks out of the protected call chain from secure button clicks
+                -- Note: Say message is handled via macro text, not here
+                C_Timer.After(0.1, function()
+                    -- Send raid message if enabled (only if from queue)
+                    if summonFromQueue and db.settings.sendRaidMessage then
+                        local raidMsg = db.settings.raidMessage or "Summoning %s"
+                        raidMsg = string.gsub(raidMsg, "%%s", currentlySummoning)
+                        SendChatMessage(raidMsg, IsInRaid() and "RAID" or "PARTY")
+                    end
 
-                -- Send whisper if enabled
-                if db.settings.autoWhisper then
-                    local whisperMsg = db.settings.whisperMessage or "Summoning you now"
-                    SendChatMessage(whisperMsg, "WHISPER", nil, currentlySummoning)
-                end
+                    -- Send whisper if enabled (only if from queue)
+                    if summonFromQueue and db.settings.autoWhisper then
+                        local whisperMsg = db.settings.whisperMessage or "Summoning you now"
+                        SendChatMessage(whisperMsg, "WHISPER", nil, currentlySummoning)
+                    end
+                end)
             end
         end
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_STOP" or
            event == "UNIT_SPELLCAST_INTERRUPTED" then
         local unitTarget, castGUID, spellID = ...
         if unitTarget == "player" then
-            local spellName = GetSpellInfo(spellID)
-            if spellName == "Ritual of Summoning" then
-                if event == "UNIT_SPELLCAST_FAILED" then
-                    print("|cFFFF0000Ritual of Summoning failed!|r")
-                end
-                -- Clear summoning state when cast is cancelled/stopped/interrupted
-                if currentlySummoning then
+            -- Clear summoning state for any interrupted cast/channel
+            if currentlySummoning then
+                local spellName = spellID and GetSpellInfo(spellID)
+                
+                -- Check if it's Ritual of Summoning
+                if spellName == "Ritual of Summoning" then
                     TRS:ClearSummoningState(currentlySummoning)
                     currentlySummoning = nil
+                    summonFromQueue = false
+                else
+                    -- For any other spell/channel interruption while summoning (like Meeting Stone)
+                    -- Clear the summoning state
+                    TRS:ClearSummoningState(currentlySummoning)
+                    currentlySummoning = nil
+                    summonFromQueue = false
+                    meetingStoneStartTime = nil
+                    meetingStoneTarget = nil
                 end
             end
         end
@@ -1886,6 +2370,56 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 -- Channel started - keep player in queue showing "Summoning..."
                 -- They'll be removed if shards decrease or timeout expires
                 summonChannelActive = true
+            else
+                -- Check if it's Meeting Stone Summon
+                local channelName = UnitChannelInfo("player")
+                if channelName then
+                    local lowerName = string.lower(channelName)
+                    if string.find(lowerName, "meeting") or string.find(lowerName, "summon") then
+                        -- Meeting Stone channel started
+                        -- Check if target is in the queue
+                        local targetName = UnitName("playertarget")
+                        if targetName then
+                            -- Check if this person is in the summon queue
+                            local db = TimbersRaidSummonerDB
+                            for i, entry in ipairs(db.summonQueue) do
+                                if entry.name == targetName then
+                                    -- Target is in queue! Set up summoning state immediately
+                                    currentlySummoning = targetName
+                                    summonFromQueue = true
+                                    meetingStoneStartTime = GetTime()  -- Track when channel started
+                                    meetingStoneTarget = targetName
+                                    TRS:UpdateSummoningStateUI(targetName, true, UnitName("player"))
+                                    
+                                    -- Use C_Timer with delay to avoid "Interface action failed" error when sending chat
+                                    -- Note: Meeting Stone doesn't use macro, so we send say message here
+                                    C_Timer.After(0.1, function()
+                                        -- Send say message if enabled
+                                        if db.settings.sendSayMessage then
+                                            local sayMsg = db.settings.sayMessage or "Summoning %s"
+                                            sayMsg = string.gsub(sayMsg, "%%s", targetName)
+                                            SendChatMessage(sayMsg, "SAY")
+                                        end
+                                        
+                                        -- Send raid message if enabled
+                                        if db.settings.sendRaidMessage then
+                                            local raidMsg = db.settings.raidMessage or "Summoning %s"
+                                            raidMsg = string.gsub(raidMsg, "%%s", targetName)
+                                            SendChatMessage(raidMsg, IsInRaid() and "RAID" or "PARTY")
+                                        end
+
+                                        -- Send whisper if enabled
+                                        if db.settings.autoWhisper then
+                                            local whisperMsg = db.settings.whisperMessage or "Summoning you now"
+                                            SendChatMessage(whisperMsg, "WHISPER", nil, targetName)
+                                        end
+                                    end)
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
             end
         end
     elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
@@ -1911,23 +2445,36 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                     currentlySummoning = nil
                 end
                 summonStartShardCount = 0
+            else
+                -- Check if it's Meeting Stone Summon stopping
+                -- Meeting Stone doesn't give us a spellID, so we need to check the channel name
+                -- Since channel has stopped, we can't call UnitChannelInfo, but we can check if we were summoning
+                if currentlySummoning and summonFromQueue and meetingStoneStartTime then
+                    local channelDuration = GetTime() - meetingStoneStartTime
+                    
+                    -- If channel lasted more than 5 seconds, assume they accepted and remove from queue
+                    if channelDuration > 5 then
+                        TRS:RemoveFromSummonQueue(currentlySummoning, "summoned")
+                    end
+                    
+                    -- Clear the summoning state
+                    TRS:ClearSummoningState(currentlySummoning)
+                    currentlySummoning = nil
+                    summonFromQueue = false
+                    meetingStoneStartTime = nil
+                    meetingStoneTarget = nil
+                end
             end
         end
     elseif event == "UI_ERROR_MESSAGE" then
         local messageType, message = ...
-        -- Check if it's related to summoning
-        if message and (string.find(message, "summon") or string.find(message, "Summon") or
-                       string.find(message, "range") or string.find(message, "mana") or
-                       string.find(message, "shard")) then
-            print("|cFFFF0000Summon Error:|r " .. message)
-        end
+        -- Error messages are already shown by the game, no need to print them
     elseif event == "BAG_UPDATE" then
         if TRS.mainFrame and TRS.mainFrame:IsShown() then
             TRS:UpdateShardCount()
         end
     elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" or
-           event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER" or
-           event == "CHAT_MSG_GUILD" then
+           event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER" then
         local message, sender = ...
         if sender and sender ~= UnitName("player") then
             TRS:ParseChatMessage(message, sender)
@@ -1935,14 +2482,24 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
--- Set up timer to check for expired queue entries
+-- Set up timer to check for expired queue entries and update range
 local timeSinceLastCheck = 0
+local timeSinceRangeUpdate = 0
 eventFrame:SetScript("OnUpdate", function(self, elapsed)
     timeSinceLastCheck = timeSinceLastCheck + elapsed
+    timeSinceRangeUpdate = timeSinceRangeUpdate + elapsed
 
     -- Check every 5 seconds
     if timeSinceLastCheck >= 5 then
         timeSinceLastCheck = 0
         TRS:CleanupExpiredQueue()
+    end
+    
+    -- Update range opacity every 1 second
+    if timeSinceRangeUpdate >= 1 then
+        timeSinceRangeUpdate = 0
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
     end
 end)
