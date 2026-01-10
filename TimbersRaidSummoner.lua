@@ -5,8 +5,9 @@ local addonName = "TimbersRaidSummoner"
 local TRS = {}
 _G[addonName] = TRS
 
--- Version
-TRS.VERSION = "2025.12.28"
+-- TRS.NAME    = ADDON_NAME
+TRS.NAME    = C_AddOns.GetAddOnMetadata("TimbersRaidSummoner", "Title")
+TRS.VERSION = C_AddOns.GetAddOnMetadata("TimbersRaidSummoner", "Version")
 
 -- Compatibility wrapper for SendAddonMessage
 -- Classic Era has C_ChatInfo.SendAddonMessage but it requires registration
@@ -61,7 +62,8 @@ TimbersRaidSummonerDB = TimbersRaidSummonerDB or {
         showRangeOpacity = true, -- Show reduced opacity for out-of-range raid members
         showLoadedMessage = true -- Show "addon loaded" message on login
     },
-    summonQueue = {}
+    summonQueue = {},
+    minimap = {}
 }
 
 -- Local references
@@ -154,7 +156,245 @@ local function Initialize()
     if db.settings.showLoadedMessage then
         print("|cFF00FF00Timber's Raid Summoner|r loaded. Type /trs or /timbersraidsummoner to toggle the interface.")
     end
+    
+    -- Initialize minimap button
+    TRS:InitializeMinimapButton()
 end
+
+-- ========================================================================
+-- Minimap Button Functions
+-- ========================================================================
+
+-- Ensure minimap database exists
+local function ensureMinimapDB()
+    TimbersRaidSummonerDB = TimbersRaidSummonerDB or {}
+    TimbersRaidSummonerDB.minimap = TimbersRaidSummonerDB.minimap or {}
+    if TimbersRaidSummonerDB.minimap.hide == nil then
+        TimbersRaidSummonerDB.minimap.hide = false
+    end
+end
+
+-- Toggle main window
+local function toggleMainWindow()
+    TRS:ToggleFrame()
+end
+
+-- Show minimap button
+local function showMinimapButton()
+    ensureMinimapDB()
+    
+    local icon = LibStub and LibStub("LibDBIcon-1.0", true)
+    if icon then
+        TimbersRaidSummonerDB.minimap.hide = false
+        icon:Show("TimbersRaidSummoner")
+    end
+end
+
+-- Hide minimap button
+local function hideMinimapButton()
+    ensureMinimapDB()
+    
+    local icon = LibStub and LibStub("LibDBIcon-1.0", true)
+    if icon then
+        TimbersRaidSummonerDB.minimap.hide = true
+        icon:Hide("TimbersRaidSummoner")
+    end
+end
+
+-- Toggle minimap button
+local function toggleMinimapButton()
+    ensureMinimapDB()
+    if TimbersRaidSummonerDB.minimap.hide then
+        showMinimapButton()
+    else
+        hideMinimapButton()
+    end
+end
+
+-- Open minimap menu
+local function openMinimapMenu(anchorFrame)
+    ensureMinimapDB()
+    
+    if not TRS._minimapDropdown then
+        TRS._minimapDropdown = CreateFrame("Frame", "TRS_MinimapDropdown", UIParent, "UIDropDownMenuTemplate")
+    end
+    
+    local function initMenu(self, level)
+        level = level or 1
+        if level ~= 1 then return end
+        
+        local info = UIDropDownMenu_CreateInfo()
+        info.text = "Timber's Raid Summoner"
+        info.isTitle = true
+        info.notCheckable = true
+        UIDropDownMenu_AddButton(info, level)
+        
+        info = UIDropDownMenu_CreateInfo()
+        info.text = "Hide minimap button"
+        info.notCheckable = true
+        info.func = function()
+            hideMinimapButton()
+            print("|cFF00FF00Timber's Raid Summoner:|r minimap button hidden. To show it again, type /trs minimap show")
+            CloseDropDownMenus()
+        end
+        UIDropDownMenu_AddButton(info, level)
+        
+        info = UIDropDownMenu_CreateInfo()
+        info.text = "Close"
+        info.notCheckable = true
+        info.func = function() CloseDropDownMenus() end
+        UIDropDownMenu_AddButton(info, level)
+    end
+    
+    UIDropDownMenu_Initialize(TRS._minimapDropdown, initMenu, "MENU")
+    ToggleDropDownMenu(1, nil, TRS._minimapDropdown, "cursor", 0, 0)
+end
+
+-- Create launcher data object
+local function createLauncher()
+    local ldb = LibStub and LibStub("LibDataBroker-1.1", true)
+    if not ldb then
+        return nil
+    end
+    
+    -- Use the spell_shadow_twilight icon
+    local iconPath = "Interface\\Icons\\Spell_shadow_twilight"
+    
+    local launcher = ldb:NewDataObject("TimbersRaidSummoner", {
+        type = "launcher",
+        text = "Timber's Raid Summoner",
+        icon = iconPath,
+        OnClick = function(clickedFrame, button)
+            if button == "LeftButton" then
+                toggleMainWindow()
+            elseif button == "RightButton" then
+                openMinimapMenu(clickedFrame)
+            end
+        end,
+        OnTooltipShow = function(tooltip)
+            if not tooltip then return end
+            tooltip:AddLine("Timber's Raid Summoner")
+            if TRS.VERSION then
+                tooltip:AddLine("v" .. tostring(TRS.VERSION), 0.8, 0.8, 0.8)
+            end
+            tooltip:AddLine(" ")
+            tooltip:AddLine("Left-click: Toggle window", 1, 1, 1)
+            tooltip:AddLine("Right-click: Options", 1, 1, 1)
+        end,
+    })
+    
+    return launcher
+end
+
+-- Register minimap icon
+local function registerMinimapIcon()
+    ensureMinimapDB()
+    
+    local icon = LibStub and LibStub("LibDBIcon-1.0", true)
+    if not icon then
+        return
+    end
+    
+    if not TRS._ldbLauncher then
+        TRS._ldbLauncher = createLauncher()
+    end
+    
+    if not TRS._ldbLauncher then
+        return
+    end
+    
+    -- Register once. LibDBIcon will handle showing/hiding based on the db.
+    if not TRS._minimapRegistered then
+        icon:Register("TimbersRaidSummoner", TRS._ldbLauncher, TimbersRaidSummonerDB.minimap)
+        TRS._minimapRegistered = true
+    end
+    
+    -- Safety net: ensure right-click opens our menu even if this LibDBIcon version
+    -- doesn't forward RightButton clicks to the LDB OnClick handler.
+    local btn = icon.GetMinimapButton and icon:GetMinimapButton("TimbersRaidSummoner")
+    if btn and not btn._trsHooked then
+        btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        btn:HookScript("OnClick", function(self, button)
+            if button == "RightButton" then
+                openMinimapMenu(self)
+            end
+        end)
+        btn._trsHooked = true
+    end
+    
+    if TimbersRaidSummonerDB.minimap.hide then
+        icon:Hide("TimbersRaidSummoner")
+    else
+        icon:Show("TimbersRaidSummoner")
+    end
+end
+
+-- Initialize minimap button
+function TRS:InitializeMinimapButton()
+    registerMinimapIcon()
+end
+
+-- Show minimap button (public API)
+function TRS:ShowMinimapButton()
+    showMinimapButton()
+end
+
+-- Hide minimap button (public API)
+function TRS:HideMinimapButton()
+    hideMinimapButton()
+end
+
+-- Toggle minimap button (public API)
+function TRS:ToggleMinimapButton()
+    toggleMinimapButton()
+end
+
+-- Handle minimap slash commands
+function TRS:HandleMinimapSlash(args)
+    args = (args or "")
+    args = (strtrim and strtrim(args)) or args
+    args = args:lower()
+    
+    -- Accept only commands that start with "minimap".
+    local head, tail = string.match(args, "^(%S+)%s*(.*)$")
+    if head ~= "minimap" then
+        return false
+    end
+    
+    tail = tail or ""
+    tail = (strtrim and strtrim(tail)) or tail
+    
+    if tail == "" then
+        self:ToggleMinimapButton()
+        if TimbersRaidSummonerDB and TimbersRaidSummonerDB.minimap and TimbersRaidSummonerDB.minimap.hide then
+            print("|cFF00FF00Timber's Raid Summoner:|r minimap button hidden")
+        else
+            print("|cFF00FF00Timber's Raid Summoner:|r minimap button shown")
+        end
+        return true
+    end
+    
+    if tail == "show" then
+        self:ShowMinimapButton()
+        print("|cFF00FF00Timber's Raid Summoner:|r minimap button shown")
+        return true
+    end
+    
+    if tail == "hide" then
+        self:HideMinimapButton()
+        print("|cFF00FF00Timber's Raid Summoner:|r minimap button hidden")
+        return true
+    end
+    
+    -- Unrecognized minimap subcommand, but we still consumed "minimap".
+    print("|cFF00FF00Timber's Raid Summoner:|r usage: /trs minimap [show|hide]")
+    return true
+end
+
+-- ========================================================================
+-- End Minimap Button Functions
+-- ========================================================================
+
 
 -- Create toast notification for new summon requests
 function TRS:CreateToastNotification()
@@ -1820,6 +2060,14 @@ SLASH_TIMBERSRAIDSUMMONER2 = "/trs"
 SLASH_TIMBERSRAIDSUMMONER3 = "/raidsummoner"
 SLASH_TIMBERSRAIDSUMMONER4 = "/timbersraidsummoner"
 SlashCmdList["TIMBERSRAIDSUMMONER"] = function(msg)
+    local input = (strtrim and strtrim(msg or "")) or (msg or "")
+    
+    -- Check for minimap commands
+    if TRS.HandleMinimapSlash and TRS:HandleMinimapSlash(input) then
+        return
+    end
+    
+    -- Default behavior: toggle frame
     TRS:ToggleFrame()
 end
 
