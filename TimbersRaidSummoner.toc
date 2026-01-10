@@ -2,7 +2,7 @@
 ## Title: Timber's Raid Summoner
 ## Notes: Manages raid summon requests with automated keyword detection
 ## Author: Timbervale
-## Version: 2026.01.09
+## Version: v2026.01.09
 ## Category: Timber's AddOns
 ## IconTexture: Interface\Icons\Spell_shadow_twilight
 ## SavedVariables: TimbersRaidSummonerDB

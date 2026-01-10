@@ -275,7 +275,7 @@ local function createLauncher()
             if not tooltip then return end
             tooltip:AddLine("Timber's Raid Summoner")
             if TRS.VERSION then
-                tooltip:AddLine("v" .. tostring(TRS.VERSION), 0.8, 0.8, 0.8)
+                tooltip:AddLine(tostring(TRS.VERSION), 0.8, 0.8, 0.8)
             end
             tooltip:AddLine(" ")
             tooltip:AddLine("Left-click: Toggle window", 1, 1, 1)
@@ -761,7 +761,7 @@ function TRS:CreateSettingsColumn(parent)
     -- Version text
     local versionText = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     versionText:SetPoint("TOPRIGHT", settingsFrame, "TOPRIGHT", 0, 0)
-    versionText:SetText("v" .. TRS.VERSION)
+    versionText:SetText(tostring(TRS.VERSION))
     versionText:SetTextColor(0.7, 0.7, 0.7)
 
     -- Container frame for border (includes scrollbar)
