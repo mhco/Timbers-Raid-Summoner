@@ -145,7 +145,7 @@ local function Initialize()
 
     -- Set up keybindings
     BINDING_HEADER_TIMBERSRAIDSUMMONER = "Timber's Raid Summoner"
-    BINDING_NAME_TIMBERSRAIDSUMMONER_TOGGLE = "Toggle Timber's Raid Summoner Window"
+    BINDING_NAME_TIMBERSRAIDSUMMONER_TOGGLE = "Toggle Timber's Raid Summoner"
 
     -- Show loaded message if enabled
     if db.settings.showLoadedMessage then
@@ -594,7 +594,7 @@ function TRS:CreateMainFrame()
 
     local instructionText = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     instructionText:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -20, -40)
-    instructionText:SetText("Left click to select a character, right click to summon")
+    instructionText:SetText("Left click to select, right click to summon, middle click to remove")
 
     -- Close button
     local closeButton = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
