@@ -220,11 +220,11 @@ local function openMinimapMenu(anchorFrame)
                info = UIDropDownMenu_CreateInfo()
         info.text = "Hide minimap button"
         info.notCheckable = true
-        info.func = function()
-            hideMinimapButton()
-            print("|cFF00FF00Timber's Raid Summoner:|r minimap button hidden. To show it again, type /trs minimap show")
-            CloseDropDownMenus()
-        end
+            info.func = function()
+                TRS:HideMinimapButton()
+                print("|cFF00FF00Timber's Raid Summoner:|r minimap button hidden. To show it again, type /trs minimap show")
+                CloseDropDownMenus()
+            end
         UIDropDownMenu_AddButton(info, level)
                info = UIDropDownMenu_CreateInfo()
         info.text = "Close"
@@ -319,11 +319,19 @@ end
 -- Show minimap button (public API)
 function TRS:ShowMinimapButton()
     showMinimapButton()
+    -- Keep settings checkbox in sync if settings UI is present
+    if TRS.settingsFrame and TRS.settingsFrame.minimapCheck and TimbersRaidSummonerDB and TimbersRaidSummonerDB.minimap then
+        TRS.settingsFrame.minimapCheck:SetChecked(not TimbersRaidSummonerDB.minimap.hide)
+    end
 end
 
 -- Hide minimap button (public API)
 function TRS:HideMinimapButton()
     hideMinimapButton()
+    -- Keep settings checkbox in sync if settings UI is present
+    if TRS.settingsFrame and TRS.settingsFrame.minimapCheck and TimbersRaidSummonerDB and TimbersRaidSummonerDB.minimap then
+        TRS.settingsFrame.minimapCheck:SetChecked(not TimbersRaidSummonerDB.minimap.hide)
+    end
 end
 
 -- Toggle minimap button (public API)
@@ -997,10 +1005,30 @@ function TRS:CreateSettingsColumn(parent)
     loadedMsgLabel:SetPoint("LEFT", loadedMsgCheck, "RIGHT", 5, 0)
     loadedMsgLabel:SetText("Show 'addon loaded' message on login")
 
+    -- Minimap show/hide checkbox
+    local minimapCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    minimapCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos - 30)
+    -- Ensure minimap DB exists and set checked state accordingly
+    ensureMinimapDB()
+    minimapCheck:SetChecked(not TimbersRaidSummonerDB.minimap.hide)
+    minimapCheck:SetScript("OnClick", function(self)
+        if self:GetChecked() then
+            TRS:ShowMinimapButton()
+        else
+            TRS:HideMinimapButton()
+        end
+    end)
+    local minimapLabel = minimapCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    minimapLabel:SetPoint("LEFT", minimapCheck, "RIGHT", 5, 0)
+    minimapLabel:SetText("Show minimap button")
+
+    yPos = yPos - 30
+
     TRS.settingsFrame = {
         frame = settingsFrame,
         kwListFrame = kwListFrame,
-        kwButtons = {}
+        kwButtons = {},
+        minimapCheck = minimapCheck
     }
 
     TRS:UpdateSettingsKeywords()
@@ -2647,3 +2675,28 @@ eventFrame:SetScript("OnUpdate", function(self, elapsed)
         end
     end
 end)
+
+
+-- ========================================================================
+-- Slash commands: /timber and /timbers
+-- Prints a list of Timber's addons that are loaded for this character.
+-- ========================================================================
+
+local function PrintTimberAddons()
+    print("|cFF00FF00Timber's Addon Slash Commands:|r")
+    -- Timber's Raid Summoner (this addon)
+    if IsAddOnLoaded("TimbersRaidSummoner") then
+        print("    [Timber's Raid Summoner] - /trs")
+    end
+
+    -- Timber's Field Guide (optional addon)
+    if IsAddOnLoaded("TimbersFieldGuide") then
+        print("    [Timber's Field Guide] - /tfg")
+    end
+end
+
+SlashCmdList["TIMBER_LIST"] = function(msg)
+    PrintTimberAddons()
+end
+SLASH_TIMBER_LIST1 = "/timber"
+SLASH_TIMBER_LIST2 = "/timbers"
