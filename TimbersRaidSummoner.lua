@@ -2685,13 +2685,18 @@ end)
 local function PrintTimberAddons()
     print("|cFF00FF00Timber's Addon Slash Commands:|r")
     -- Timber's Raid Summoner (this addon)
-    if IsAddOnLoaded("TimbersRaidSummoner") then
+    if C_AddOns.IsAddOnLoaded("TimbersRaidSummoner") then
         print("    [Timber's Raid Summoner] - /trs")
     end
 
     -- Timber's Field Guide (optional addon)
-    if IsAddOnLoaded("TimbersFieldGuide") then
+    if C_AddOns.IsAddOnLoaded("TimbersFieldGuide") then
         print("    [Timber's Field Guide] - /tfg")
+    end
+
+    -- Timber's Field Guide (optional addon)
+    if C_AddOns.IsAddOnLoaded("TimbersPartyDing") then
+        print("    [Timber's Party Ding] - /tpd")
     end
 end
 
