@@ -57,9 +57,8 @@ TimbersRaidSummonerDB = TimbersRaidSummonerDB or {
         whisperMessage = "Summons incoming. Be ready to accept it. If you don't receive it within 30 seconds, let me know!",
         checkMana = false,
         checkShards = false,
-        shareList = false,
-        shamanColorVanilla = true, -- true = pink (vanilla), false = blue (TBC+)
-        showRangeOpacity = true, -- Show reduced opacity for out-of-range raid members
+        shamanColor = "default", -- "default" = expansion default, "blue", "pink"
+        rangeOpacity = 0.5, -- Opacity for out-of-range raid members (0.1 - 1.0)
         showLoadedMessage = true -- Show "addon loaded" message on login
     },
     summonQueue = {},
@@ -140,6 +139,19 @@ local function Initialize()
     end
     if db.settings.showToastNotification == nil then
         db.settings.showToastNotification = true
+    end
+    -- Migrate old shamanColorVanilla boolean to new shamanColor string
+    if db.settings.shamanColorVanilla ~= nil then
+        -- true was the old default, so migrate to "default"
+        -- false was explicitly set by user, so migrate to "blue"
+        db.settings.shamanColor = db.settings.shamanColorVanilla and "default" or "blue"
+        db.settings.shamanColorVanilla = nil
+    end
+    if db.settings.shamanColor == nil then
+        db.settings.shamanColor = "default"
+    end
+    if db.settings.rangeOpacity == nil then
+        db.settings.rangeOpacity = 0.5
     end
        TRS:CreateMainFrame()
 
@@ -400,7 +412,9 @@ function TRS:CreateToastNotification()
     toast:Hide()
        -- Make clickable
     toast:SetScript("OnMouseDown", function(self)
-        TRS:ToggleFrame()
+        if TRS.mainFrame and not TRS.mainFrame:IsShown() then
+            TRS.mainFrame:Show()
+        end
         self:Hide()
     end)
        -- Player name text
@@ -565,7 +579,7 @@ function TRS:CreateMainFrame()
 
     -- Title text
     local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOP", titleTexture, "TOP", 0, -14)
+    title:SetPoint("TOP", titleTexture, "TOP", 0, -16)
     title:SetText("Timber's Raid Summoner")
     title:SetTextColor(1, 0.82, 0, 1) -- Gold color
 
@@ -750,7 +764,7 @@ function TRS:CreateSettingsColumn(parent)
 
     -- Content frame
     local content = CreateFrame("Frame", nil, scrollFrame)
-    content:SetSize(340, 800)
+    content:SetSize(340, 905)
     scrollFrame:SetScrollChild(content)
 
     local yPos = -10
@@ -793,7 +807,7 @@ function TRS:CreateSettingsColumn(parent)
 
     -- Keywords list container with border
     local kwContainer = CreateFrame("Frame", nil, content, "BackdropTemplate")
-    kwContainer:SetSize(319, 159)
+    kwContainer:SetSize(319, 163)
     kwContainer:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
     kwContainer:SetBackdrop({
         edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -818,7 +832,7 @@ function TRS:CreateSettingsColumn(parent)
     kwScrollFrame:SetScrollChild(kwListFrame)
 
     -- Restore Defaults button
-    yPos = yPos - 165
+    yPos = yPos - 169
     local restoreButton = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
     restoreButton:SetSize(120, 25)
     restoreButton:SetPoint("TOPRIGHT", content, "TOPRIGHT", -10, yPos)
@@ -826,7 +840,7 @@ function TRS:CreateSettingsColumn(parent)
     restoreButton:SetScript("OnClick", function()
         StaticPopup_Show("TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS")
     end)
-    yPos = yPos - 30
+    yPos = yPos - 40
 
     -- Divider
     local divider1 = content:CreateTexture(nil, "ARTWORK")
@@ -923,14 +937,155 @@ function TRS:CreateSettingsColumn(parent)
     whisperMsgBox:SetScript("OnTextChanged", function(self)
         db.settings.whisperMessage = self:GetText()
     end)
-    yPos = yPos - 40
+    yPos = yPos - 55
 
-    -- Misc section divider
+    -- Interface section divider
     local divider3 = content:CreateTexture(nil, "ARTWORK")
     divider3:SetSize(320, 1)
     divider3:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
     divider3:SetColorTexture(0.5, 0.5, 0.5, 0.5)
-    yPos = yPos - 10
+    yPos = yPos - 15
+
+    -- Interface header
+    local interfaceHeader = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    interfaceHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    interfaceHeader:SetText("Interface")
+    yPos = yPos - 30
+
+    -- Shaman color dropdown
+    local shamanColorLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    shamanColorLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    shamanColorLabel:SetText("Shaman Class Color:")
+    yPos = yPos - 20
+
+    local shamanColorDropdown = CreateFrame("Frame", "TRS_ShamanColorDropdown", content, "UIDropDownMenuTemplate")
+    shamanColorDropdown:SetPoint("TOPLEFT", content, "TOPLEFT", -5, yPos)
+    UIDropDownMenu_SetWidth(shamanColorDropdown, 150)
+
+    local shamanColorOptions = {
+        { value = "default", text = "Expansion Default", color = nil },
+        { value = "blue", text = "Blue", color = "0070DE" },
+        { value = "pink", text = "Pink", color = "F58CBA" }
+    }
+
+    local function GetExpansionDefaultColor()
+        if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
+            return "F58CBA" -- pink
+        else
+            return "0070DE" -- blue
+        end
+    end
+
+    local function GetShamanColorText(value, useColor)
+        for _, option in ipairs(shamanColorOptions) do
+            if option.value == value then
+                if useColor then
+                    local color = option.color or GetExpansionDefaultColor()
+                    return "|cFF" .. color .. option.text .. "|r"
+                end
+                return option.text
+            end
+        end
+        return "Expansion Default"
+    end
+
+    UIDropDownMenu_SetText(shamanColorDropdown, GetShamanColorText(db.settings.shamanColor, true))
+
+    UIDropDownMenu_Initialize(shamanColorDropdown, function(self, level)
+        for _, option in ipairs(shamanColorOptions) do
+            local info = UIDropDownMenu_CreateInfo()
+            local color = option.color or GetExpansionDefaultColor()
+            info.text = "|cFF" .. color .. option.text .. "|r"
+            info.value = option.value
+            info.checked = (db.settings.shamanColor == option.value)
+            info.func = function()
+                db.settings.shamanColor = option.value
+                UIDropDownMenu_SetText(shamanColorDropdown, "|cFF" .. color .. option.text .. "|r")
+                CloseDropDownMenus()
+                if TRS.mainFrame and TRS.mainFrame:IsShown() then
+                    TRS:UpdateRaidList()
+                end
+            end
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    yPos = yPos - 30
+
+    yPos = yPos - 10  -- Extra spacing before slider section
+
+    -- Range opacity slider
+    local rangeOpacityLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    rangeOpacityLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    rangeOpacityLabel:SetText("Range opacity (out-of-range):")
+    yPos = yPos - 20
+
+    local rangeOpacitySlider = CreateFrame("Slider", nil, content, "OptionsSliderTemplate")
+    rangeOpacitySlider:SetPoint("TOPLEFT", content, "TOPLEFT", 20, yPos)
+    rangeOpacitySlider:SetMinMaxValues(0.1, 1.0)
+    rangeOpacitySlider:SetValueStep(0.05)
+    rangeOpacitySlider:SetObeyStepOnDrag(true)
+    rangeOpacitySlider:SetWidth(200)
+    rangeOpacitySlider:SetHeight(16)
+    rangeOpacitySlider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+
+    local rangeOpacitySliderBg = rangeOpacitySlider:CreateTexture(nil, "BACKGROUND")
+    rangeOpacitySliderBg:SetTexture("Interface\\Buttons\\UI-SliderBar-Background")
+    rangeOpacitySliderBg:SetPoint("CENTER", rangeOpacitySlider, "CENTER", 0, 0)
+    rangeOpacitySliderBg:SetSize(200, 8)
+
+    local rangeOpacityValue = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    rangeOpacityValue:SetSize(40, 20)
+    rangeOpacityValue:SetPoint("LEFT", rangeOpacitySlider, "RIGHT", 10, 0)
+    rangeOpacityValue:SetAutoFocus(false)
+    rangeOpacityValue:SetNumeric(true)
+    rangeOpacityValue:SetMaxLetters(3)
+
+    local function ClampOpacity(value)
+        value = tonumber(value) or 0.4
+        if value < 0.1 then value = 0.1 end
+        if value > 1.0 then value = 1.0 end
+        return value
+    end
+
+    local function UpdateRangeOpacity(value)
+        value = ClampOpacity(value)
+        db.settings.rangeOpacity = value
+        rangeOpacitySlider:SetValue(value)
+        rangeOpacityValue:SetText(tostring(math.floor(value * 100 + 0.5)))
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
+    end
+
+    rangeOpacitySlider:SetScript("OnValueChanged", function(self, value)
+        if rangeOpacityValue:HasFocus() then
+            return
+        end
+        UpdateRangeOpacity(value)
+    end)
+
+    rangeOpacityValue:SetScript("OnEnterPressed", function(self)
+        local percent = tonumber(self:GetText()) or 40
+        UpdateRangeOpacity(percent / 100)
+        self:ClearFocus()
+    end)
+    rangeOpacityValue:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        UpdateRangeOpacity(db.settings.rangeOpacity or 0.4)
+    end)
+
+    UpdateRangeOpacity(db.settings.rangeOpacity or 0.4)
+    yPos = yPos - 30
+
+    -- Extra spacing below Interface group
+    yPos = yPos - 20
+
+    -- Misc section divider
+    local divider4 = content:CreateTexture(nil, "ARTWORK")
+    divider4:SetSize(320, 1)
+    divider4:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
+    divider4:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+    yPos = yPos - 20
 
     -- Misc header
     local miscHeader = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -948,7 +1103,16 @@ function TRS:CreateSettingsColumn(parent)
     local soundLabel = soundCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     soundLabel:SetPoint("LEFT", soundCheck, "RIGHT", 5, 0)
     soundLabel:SetText("Play sound when player added to queue")
-    yPos = yPos - 30
+    yPos = yPos - 25
+
+    local soundTestButton = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
+    soundTestButton:SetSize(50, 20)
+    soundTestButton:SetPoint("TOPLEFT", content, "TOPLEFT", 50, yPos)
+    soundTestButton:SetText("Test")
+    soundTestButton:SetScript("OnClick", function()
+        PlaySound(8959)
+    end)
+    yPos = yPos - 25
 
     -- Show toast notification checkbox
     local toastCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
@@ -960,39 +1124,23 @@ function TRS:CreateSettingsColumn(parent)
     local toastLabel = toastCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     toastLabel:SetPoint("LEFT", toastCheck, "RIGHT", 5, 0)
     toastLabel:SetText("Show popup notification when player added to queue")
-    yPos = yPos - 30
+    yPos = yPos - 25
 
-    -- Shaman color checkbox
-    local shamanColorCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
-    shamanColorCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
-    shamanColorCheck:SetChecked(db.settings.shamanColorVanilla)
-    shamanColorCheck:SetScript("OnClick", function(self)
-        db.settings.shamanColorVanilla = self:GetChecked()
-        -- Refresh raid list to show new colors
-        if TRS.mainFrame and TRS.mainFrame:IsShown() then
-            TRS:UpdateRaidList()
+    local toastTestButton = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
+    toastTestButton:SetSize(50, 20)
+    toastTestButton:SetPoint("TOPLEFT", content, "TOPLEFT", 50, yPos)
+    toastTestButton:SetText("Test")
+    toastTestButton:SetScript("OnClick", function(self)
+        if db.settings.playSoundOnAdd then
+            PlaySound(8959)
         end
+        TRS:ShowToast("TestPlayer")
+        self:Disable()
+        C_Timer.After(5, function()
+            self:Enable()
+        end)
     end)
-    local shamanColorLabel = shamanColorCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    shamanColorLabel:SetPoint("LEFT", shamanColorCheck, "RIGHT", 5, 0)
-    shamanColorLabel:SetText("Use vanilla Shaman color (pink)")
-    yPos = yPos - 30
-
-    -- Range opacity checkbox
-    local rangeOpacityCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
-    rangeOpacityCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 10, yPos)
-    rangeOpacityCheck:SetChecked(db.settings.showRangeOpacity)
-    rangeOpacityCheck:SetScript("OnClick", function(self)
-        db.settings.showRangeOpacity = self:GetChecked()
-        -- Refresh raid list to show/hide opacity
-        if TRS.mainFrame and TRS.mainFrame:IsShown() then
-            TRS:UpdateRaidList()
-        end
-    end)
-    local rangeOpacityLabel = rangeOpacityCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    rangeOpacityLabel:SetPoint("LEFT", rangeOpacityCheck, "RIGHT", 5, 0)
-    rangeOpacityLabel:SetText("Show range opacity (dim out-of-range members)")
-    yPos = yPos - 30
+    yPos = yPos - 25
 
     -- Show loaded message checkbox
     local loadedMsgCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
@@ -1359,14 +1507,13 @@ function TRS:UpdateRaidList()
                 button.nameText:SetTextColor(r, g, b)
 
                 -- Set opacity based on range (if enabled)
-                if db.settings.showRangeOpacity then
-                    if UnitInRange(member.unitId) then
-                        button:SetAlpha(1.0)
-                    else
-                        button:SetAlpha(0.3)
-                    end
-                else
+                if UnitInRange(member.unitId) then
                     button:SetAlpha(1.0)
+                else
+                    local dimAlpha = db.settings.rangeOpacity or 0.8
+                    if dimAlpha < 0.1 then dimAlpha = 0.1 end
+                    if dimAlpha > 1.0 then dimAlpha = 1.0 end
+                    button:SetAlpha(dimAlpha)
                 end
 
                 button:Show()
@@ -2018,7 +2165,22 @@ function TRS:GetClassColor(class)
         HUNTER = {0.67, 0.83, 0.45},
         ROGUE = {1.00, 0.96, 0.41},
         PRIEST = {1.00, 1.00, 1.00},
-        SHAMAN = db.settings.shamanColorVanilla and {0.96, 0.55, 0.73} or {0.00, 0.44, 0.87},
+        SHAMAN = (function()
+            local setting = db.settings.shamanColor or "default"
+            if setting == "pink" then
+                return {0.96, 0.55, 0.73}
+            elseif setting == "blue" then
+                return {0.00, 0.44, 0.87}
+            else -- "default" - based on expansion
+                -- WOW_PROJECT_CLASSIC (2) = Classic Era (Vanilla) uses pink
+                -- All other versions (TBC+, Retail) use blue
+                if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
+                    return {0.96, 0.55, 0.73} -- pink (vanilla)
+                else
+                    return {0.00, 0.44, 0.87} -- blue (TBC+)
+                end
+            end
+        end)(),
         MAGE = {0.41, 0.80, 0.94},
         WARLOCK = {0.58, 0.51, 0.79},
         DRUID = {1.00, 0.49, 0.04}
