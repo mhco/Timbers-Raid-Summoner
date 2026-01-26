@@ -124,6 +124,78 @@ function TRS:CanSummon()
        return false
 end
 
+-- Get formatted zone text for a unit, including subzone if applicable
+-- Returns "Subzone, Zone" or just "Zone" if no subzone
+-- playerName is optional, used to look up raid roster info
+function TRS:GetFormattedZoneForUnit(unitId, playerName)
+    -- For the player, we can use GetSubZoneText() for more detailed info
+    if UnitIsUnit(unitId, "player") then
+        local subZone = GetSubZoneText()
+        local zone = GetRealZoneText()
+        if subZone and subZone ~= "" and zone and zone ~= "" and subZone ~= zone then
+            return subZone .. ", " .. zone
+        elseif zone and zone ~= "" then
+            return zone
+        end
+    end
+
+    -- For raid members, GetRaidRosterInfo returns subzone-level info (e.g., "Ammen Vale")
+    -- Combine it with C_Map zone info to get "Ammen Vale, Azuremyst Isle"
+    if IsInRaid() and playerName then
+        local rosterZone = nil
+        local numMembers = GetNumGroupMembers()
+        for i = 1, numMembers do
+            local name, _, _, _, _, _, zone = GetRaidRosterInfo(i)
+            if name == playerName then
+                rosterZone = zone
+                break
+            end
+        end
+
+        if rosterZone and rosterZone ~= "" then
+            -- Try to get the parent zone from C_Map
+            local mapID = C_Map.GetBestMapForUnit(unitId)
+            if mapID then
+                local mapInfo = C_Map.GetMapInfo(mapID)
+                if mapInfo and mapInfo.name and mapInfo.name ~= rosterZone then
+                    -- rosterZone is the subzone, mapInfo.name is the zone
+                    return rosterZone .. ", " .. mapInfo.name
+                end
+            end
+            -- Fallback to just the roster zone if we can't get parent
+            return rosterZone
+        end
+    end
+
+    -- For party members or fallback, try C_Map
+    local mapID = C_Map.GetBestMapForUnit(unitId)
+    if not mapID then
+        return nil
+    end
+
+    local mapInfo = C_Map.GetMapInfo(mapID)
+    if not mapInfo or not mapInfo.name then
+        return nil
+    end
+
+    local zoneName = mapInfo.name
+    local parentMapID = mapInfo.parentMapID
+
+    -- Check if there's a parent zone (not continent)
+    if parentMapID then
+        local parentInfo = C_Map.GetMapInfo(parentMapID)
+        if parentInfo and parentInfo.name then
+            -- Only append parent if it's a zone (mapType 3) not a continent (mapType 2)
+            -- mapType: 2 = Continent, 3 = Zone, 5 = Micro (subzone)
+            if parentInfo.mapType and parentInfo.mapType == 3 then
+                return zoneName .. ", " .. parentInfo.name
+            end
+        end
+    end
+
+    return zoneName
+end
+
 -- Initialize the addon
 local function Initialize()
     db = TimbersRaidSummonerDB
@@ -496,15 +568,13 @@ function TRS:CreateMainFrame()
                 local spellName = channelName or castName
                 local lowerName = string.lower(spellName)
                 if string.find(lowerName, "summon") or string.find(lowerName, "meeting") or string.find(lowerName, "ritual") then
-                    -- Only store target if this is a NEW channel (wasn't channeling last frame)
-                    if not wasChanneling[playerName] then
-                        local targetName = UnitName("playertarget")
-                        if targetName then
-                            activeSummons[playerName] = targetName
-                            stateChanged = true
-                        end
+                    -- Use currentlySummoning if we know who we're summoning, otherwise try target
+                    local targetName = currentlySummoning or UnitName("playertarget")
+                    if targetName and activeSummons[playerName] ~= targetName then
+                        activeSummons[playerName] = targetName
+                        stateChanged = true
                     end
-                    -- If already channeling, keep the existing target stored
+                    wasChanneling[playerName] = true
                 else
                     if activeSummons[playerName] then
                         activeSummons[playerName] = nil
@@ -512,9 +582,9 @@ function TRS:CreateMainFrame()
                     end
                     wasChanneling[playerName] = false
                 end
-                wasChanneling[playerName] = true
             else
-                if activeSummons[playerName] then
+                -- Don't clear activeSummons if currentlySummoning is set (handles cast-to-channel transition gap)
+                if activeSummons[playerName] and not currentlySummoning then
                     activeSummons[playerName] = nil
                     stateChanged = true
                 end
@@ -1348,18 +1418,14 @@ function TRS:UpdateRaidList()
                         if UnitCastingInfo("player") or UnitChannelInfo("player") then
                             return
                         end
-                                               -- Don't allow clicking if player already has a target
-                        if UnitExists("target") then
-                            return
-                        end
                                                -- Clear any previous summoning state before setting new one
                         if currentlySummoning and currentlySummoning ~= self.playerName then
                             TRS:ClearSummoningState(currentlySummoning)
                         end
-                                               -- Store who we want to summon, but don't set UI state yet
-                        -- Wait for UNIT_SPELLCAST_START to confirm the cast actually started
-                        currentlySummoning = self.playerName
+                                               currentlySummoning = self.playerName
                         summonFromQueue = false
+                        TRS:UpdateSummoningStateUI(self.playerName, true, UnitName("player"))
+                        TRS:BroadcastSummoningState(self.playerName, true)
                     end
                 end)
 
@@ -1388,9 +1454,12 @@ function TRS:UpdateRaidList()
                     if self.unitId then
                         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                         GameTooltip:SetText(self.playerName, 1, 1, 1)
-                                               -- Show zone/location
-                        -- For raid members, we can get their zone from raid roster
-                        if IsInRaid() then
+                                               -- Show zone/location using C_Map for detailed subzone info
+                        local zoneText = TRS:GetFormattedZoneForUnit(self.unitId, self.playerName)
+                        if zoneText then
+                            GameTooltip:AddLine(zoneText, 0.8, 0.8, 0.8)
+                        elseif IsInRaid() then
+                            -- Fallback to raid roster info if C_Map didn't work
                             local numMembers = GetNumGroupMembers()
                             for i = 1, numMembers do
                                 local name, _, _, _, _, _, zone = GetRaidRosterInfo(i)
@@ -1404,11 +1473,7 @@ function TRS:UpdateRaidList()
                                 end
                             end
                         else
-                            -- In party, everyone is in same zone typically
-                            local zone = GetRealZoneText()
-                            if zone and zone ~= "" then
-                                GameTooltip:AddLine(zone, 0.8, 0.8, 0.8)
-                            end
+                            GameTooltip:AddLine("Zone: Unknown", 0.6, 0.6, 0.6)
                         end
                                                -- Show who is summoning them if applicable
                         if self.summonerName then
@@ -1459,22 +1524,31 @@ function TRS:UpdateRaidList()
                                -- Check if this member is being summoned by anyone in activeSummons
                 local isBeingSummoned = false
                 local summonerName = nil
-                               for summoner, target in pairs(activeSummons) do
-                    if target == member.name then
-                        isBeingSummoned = true
-                        summonerName = summoner
-                        break
+
+                -- First check if local player is summoning this member
+                if currentlySummoning == member.name then
+                    isBeingSummoned = true
+                    summonerName = UnitName("player")
+                else
+                    -- Check activeSummons for other summoners
+                    for summoner, target in pairs(activeSummons) do
+                        if target == member.name then
+                            isBeingSummoned = true
+                            summonerName = summoner
+                            break
+                        end
                     end
                 end
                                -- Update summoner name if detected via channeling (for tooltip)
                 if isBeingSummoned and summonerName then
                     button.summonerName = summonerName
-                elseif not isBeingSummoned and currentlySummoning ~= member.name then
+                elseif not isBeingSummoned and not button.isSummoning then
                     button.summonerName = nil
                 end
                                -- Check if this member is being summoned (either via addon tracking OR detected channeling)
                 local showSummoning = button.isSummoning or isBeingSummoned
-                               -- Only update level/class if not currently summoning or being summoned
+
+                -- Only update level/class if not currently summoning or being summoned
                 if showSummoning then
                     -- Keep the "Summoning..." text
                     button.levelText:SetWidth(85)
@@ -1834,17 +1908,25 @@ function TRS:UpdateSummonQueue()
                -- Check if someone is summoning this player (use shared activeSummons table)
         local isBeingSummoned = false
         local summonerName = nil
-               for summoner, target in pairs(activeSummons) do
-            if target == playerName then
-                isBeingSummoned = true
-                summonerName = summoner
-                break
+
+        -- First check if local player is summoning this member
+        if currentlySummoning == playerName then
+            isBeingSummoned = true
+            summonerName = UnitName("player")
+        else
+            -- Check activeSummons for other summoners
+            for summoner, target in pairs(activeSummons) do
+                if target == playerName then
+                    isBeingSummoned = true
+                    summonerName = summoner
+                    break
+                end
             end
         end
                -- Update summoner name if detected via channeling (for tooltip)
         if isBeingSummoned and summonerName then
             button.summonerName = summonerName
-        elseif not isBeingSummoned and currentlySummoning ~= playerName then
+        elseif not isBeingSummoned and not button.isSummoning then
             button.summonerName = nil
         end
                -- Check if this member is being summoned (either via addon tracking OR detected channeling)
@@ -2350,11 +2432,12 @@ function TRS:SendQueueData(target)
 
     local channel = IsInRaid() and "RAID" or "PARTY"
 
-    -- Check if anyone is currently being summoned
-    local summoningPlayer = currentlySummoning or ""
+    -- Check if anyone is currently being summoned by us
+    local summoningTarget = currentlySummoning or ""
+    local summonerName = currentlySummoning and UnitName("player") or ""
 
-    -- Send queue count first
-    local countMsg = "SYNC_COUNT:" .. #db.summonQueue .. ":" .. summoningPlayer
+    -- Send queue count first (includes our summoning state)
+    local countMsg = "SYNC_COUNT:" .. #db.summonQueue .. ":" .. summoningTarget .. ":" .. summonerName
     SendAddonMessageCompat("TRS", countMsg, channel)
 
     -- Send each queue entry
@@ -2379,14 +2462,20 @@ function TRS:HandleAddonMessage(message, sender)
         -- Someone requested queue sync, send our data
         TRS:SendQueueData()
     elseif string.match(message, "^SYNC_COUNT:") then
-        -- Receiving queue sync
-        local count, summoningPlayer = string.match(message, "^SYNC_COUNT:(%d+):(.*)$")
+        -- Receiving queue sync (format: SYNC_COUNT:count:summoningTarget:summonerName)
+        local count, summoningTarget, summonerName = string.match(message, "^SYNC_COUNT:(%d+):([^:]*):?(.*)$")
         count = tonumber(count) or 0
 
-        -- Store the summoning player info
-        TRS.receivedSummoningPlayer = summoningPlayer ~= "" and summoningPlayer or nil
+        -- Store the summoning info
+        TRS.receivedSummoningTarget = (summoningTarget and summoningTarget ~= "") and summoningTarget or nil
+        TRS.receivedSummonerName = (summonerName and summonerName ~= "") and summonerName or nil
         TRS.receivedQueue = {}
         TRS.expectedQueueSize = count
+
+        -- If queue is empty but someone is summoning, still apply the summoning state
+        if count == 0 and TRS.receivedSummoningTarget then
+            TRS:UpdateSummoningStateUI(TRS.receivedSummoningTarget, true, TRS.receivedSummonerName)
+        end
     elseif string.match(message, "^SYNC_ENTRY:") then
         -- Receiving a queue entry
         local index, name, timestamp = string.match(message, "^SYNC_ENTRY:(%d+):([^:]+):(%d+)$")
@@ -2486,28 +2575,18 @@ function TRS:MergeReceivedQueue()
     -- Update UI if visible
     if TRS.mainFrame and TRS.mainFrame:IsShown() then
         TRS:UpdateSummonQueue()
+    end
 
-        -- If someone is being summoned, mark it in the UI
-        if TRS.receivedSummoningPlayer and TRS.summonQueueFrame and TRS.summonQueueFrame.buttons then
-            for _, button in ipairs(TRS.summonQueueFrame.buttons) do
-                if button.playerName == TRS.receivedSummoningPlayer then
-                    button.isSummoning = true
-                    button.levelText:SetWidth(85)
-                    button.classText:SetWidth(0)
-                    button.levelText:SetText("Summoning...")
-                    button.classText:SetText("")
-                    button.levelText:SetTextColor(1, 1, 0)
-                    button.classText:SetTextColor(1, 1, 0)
-                    break
-                end
-            end
-        end
+    -- If someone is being summoned, mark it in the UI (both queue and raid list)
+    if TRS.receivedSummoningTarget then
+        TRS:UpdateSummoningStateUI(TRS.receivedSummoningTarget, true, TRS.receivedSummonerName)
     end
 
     -- Clear received data
     TRS.receivedQueue = nil
     TRS.expectedQueueSize = nil
-    TRS.receivedSummoningPlayer = nil
+    TRS.receivedSummoningTarget = nil
+    TRS.receivedSummonerName = nil
 end
 
 -- Clean up expired summon queue entries
@@ -2643,45 +2722,58 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local unitTarget, castGUID, spellID = ...
         if unitTarget == "player" then
             local spellName = GetSpellInfo(spellID)
-            if spellName == "Ritual of Summoning" and currentlySummoning then
+            if spellName == "Ritual of Summoning" then
                 local db = TimbersRaidSummonerDB
-                               -- Cast actually started! Set the UI state and broadcast immediately
-                TRS:UpdateSummoningStateUI(currentlySummoning, true, UnitName("player"))
-                TRS:BroadcastSummoningState(currentlySummoning, true)
 
-                -- Use C_Timer with delay to avoid "Interface action failed" error when sending chat
-                -- This breaks out of the protected call chain from secure button clicks
-                -- Note: Say message is handled via macro text, not here
-                C_Timer.After(0.1, function()
-                    -- Send raid message if enabled (only if from queue)
-                    if summonFromQueue and db.settings.sendRaidMessage then
-                        local raidMsg = db.settings.raidMessage or "Summoning %s"
-                        raidMsg = string.gsub(raidMsg, "%%s", currentlySummoning)
-                        SendChatMessage(raidMsg, IsInRaid() and "RAID" or "PARTY")
+                -- If currentlySummoning not set (manual cast), detect target
+                if not currentlySummoning then
+                    local targetName = UnitName("target")
+                    if targetName and (UnitInRaid(targetName) or UnitInParty(targetName)) then
+                        currentlySummoning = targetName
+                        summonFromQueue = false  -- Manual cast, not from queue
                     end
+                end
 
-                    -- Send whisper if enabled (only if from queue)
-                    if summonFromQueue and db.settings.autoWhisper then
-                        local whisperMsg = db.settings.whisperMessage or "Summoning you now"
-                        SendChatMessage(whisperMsg, "WHISPER", nil, currentlySummoning)
-                    end
-                end)
+                -- Cast actually started! Set the UI state and broadcast immediately
+                if currentlySummoning then
+                    TRS:UpdateSummoningStateUI(currentlySummoning, true, UnitName("player"))
+                    TRS:BroadcastSummoningState(currentlySummoning, true)
+
+                    -- Use C_Timer with delay to avoid "Interface action failed" error when sending chat
+                    -- This breaks out of the protected call chain from secure button clicks
+                    -- Note: Say message is handled via macro text, not here
+                    C_Timer.After(0.1, function()
+                        -- Send raid message if enabled (only if from queue)
+                        if summonFromQueue and db.settings.sendRaidMessage then
+                            local raidMsg = db.settings.raidMessage or "Summoning %s"
+                            raidMsg = string.gsub(raidMsg, "%%s", currentlySummoning)
+                            SendChatMessage(raidMsg, IsInRaid() and "RAID" or "PARTY")
+                        end
+
+                        -- Send whisper if enabled (only if from queue)
+                        if summonFromQueue and db.settings.autoWhisper then
+                            local whisperMsg = db.settings.whisperMessage or "Summoning you now"
+                            SendChatMessage(whisperMsg, "WHISPER", nil, currentlySummoning)
+                        end
+                    end)
+                end
             end
         end
-    elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_STOP" or
-           event == "UNIT_SPELLCAST_INTERRUPTED" then
+    elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" then
+        -- Note: UNIT_SPELLCAST_STOP is NOT included here because it fires when cast
+        -- successfully transitions to channel (e.g., Ritual of Summoning cast -> channel)
         local unitTarget, castGUID, spellID = ...
         if unitTarget == "player" then
-            -- Clear summoning state for any interrupted cast/channel
+            -- Clear summoning state for failed/interrupted cast
             if currentlySummoning then
                 local spellName = spellID and GetSpellInfo(spellID)
-                               -- Check if it's Ritual of Summoning
+                -- Check if it's Ritual of Summoning
                 if spellName == "Ritual of Summoning" then
                     TRS:ClearSummoningState(currentlySummoning)
                     currentlySummoning = nil
                     summonFromQueue = false
                 else
-                    -- For any other spell/channel interruption while summoning (like Meeting Stone)
+                    -- For any other spell failure while summoning (like Meeting Stone)
                     -- Clear the summoning state
                     TRS:ClearSummoningState(currentlySummoning)
                     currentlySummoning = nil
@@ -2691,6 +2783,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 end
             end
         end
+    elseif event == "UNIT_SPELLCAST_STOP" then
+        -- Note: We intentionally do NOT clear state here because STOP fires when cast
+        -- successfully transitions to channel (e.g., Ritual of Summoning cast -> channel)
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local unitTarget, castGUID, spellID = ...
         if unitTarget == "player" then
@@ -2837,33 +2932,3 @@ eventFrame:SetScript("OnUpdate", function(self, elapsed)
         end
     end
 end)
-
-
--- ========================================================================
--- Slash commands: /timber and /timbers
--- Prints a list of Timber's addons that are loaded for this character.
--- ========================================================================
-
-local function PrintTimberAddons()
-    print("|cFF00FF00Timber's Addon Slash Commands:|r")
-    -- Timber's Raid Summoner (this addon)
-    if C_AddOns.IsAddOnLoaded("TimbersRaidSummoner") then
-        print("    [Timber's Raid Summoner] - /trs")
-    end
-
-    -- Timber's Field Guide (optional addon)
-    if C_AddOns.IsAddOnLoaded("TimbersFieldGuide") then
-        print("    [Timber's Field Guide] - /tfg")
-    end
-
-    -- Timber's Field Guide (optional addon)
-    if C_AddOns.IsAddOnLoaded("TimbersPartyDing") then
-        print("    [Timber's Party Ding] - /tpd")
-    end
-end
-
-SlashCmdList["TIMBER_LIST"] = function(msg)
-    PrintTimberAddons()
-end
-SLASH_TIMBER_LIST1 = "/timber"
-SLASH_TIMBER_LIST2 = "/timbers"
