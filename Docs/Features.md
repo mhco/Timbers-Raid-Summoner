@@ -8,6 +8,7 @@ A comprehensive raid summon management addon for WoW Classic Era and Anniversary
 - Displays all members of your current raid or party group
 - Shows player name, level, and class for each member
 - Class colors are displayed for easy identification
+- Crown icon displayed for party/raid leader
 - **Left-click** a player to target them
 - **Right-click** a player to cast Ritual of Summoning on them (summons without sending messages)
 - Out-of-range/offline players can be displayed with reduced opacity (configurable)
@@ -111,7 +112,7 @@ A comprehensive raid summon management addon for WoW Classic Era and Anniversary
 
 ### Minimap Button
 - Toggle the addon window from the minimap
-- Button can be shown/hidden via `/trs minimap` or `/trs minimap`, or via the settings panel
+- Button can be shown/hidden via `/trs minimap` or via the settings panel
 - Draggable to any position around the minimap
 
 ### Keybinding Support
@@ -121,9 +122,7 @@ A comprehensive raid summon management addon for WoW Classic Era and Anniversary
 ## Slash Commands
 
 - `/trs` or `/timbersraidsummoner` - Toggle the addon window
-- `/trs minimap` - Toggle the minimap button
-- `/trs minimap show` - Show the minimap button
-- `/trs minimap hide` - Hide the minimap button
+- `/trs minimap` - Toggle the minimap button visibility
 
 ## Technical Details
 

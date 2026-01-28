@@ -1323,11 +1323,14 @@ function TRS:UpdateRaidList()
         local name, rank, subgroup, level, class, classToken
         local unitId
         local isOnline = true
+        local isLeader = false
         if isRaid then
-            name, rank, subgroup, level, class = GetRaidRosterInfo(i)
+            local fileName, zone, online, isDead, role, isML
+            name, rank, subgroup, level, class, fileName, zone, online, isDead, role, isML = GetRaidRosterInfo(i)
             unitId = "raid"..i
             _, classToken = UnitClass(unitId)
             isOnline = UnitIsConnected(unitId)
+            isLeader = (rank == 2)  -- rank 2 = leader
             -- Fallback to UnitLevel if GetRaidRosterInfo didn't provide it
             if not level or level == 0 then
                 level = UnitLevel(unitId)
@@ -1340,6 +1343,7 @@ function TRS:UpdateRaidList()
                 unitId = "player"
                 subgroup = 1
                 isOnline = true
+                isLeader = UnitIsGroupLeader("player")
             elseif i <= numMembers then
                 unitId = "party"..(i-1)
                 name = UnitName(unitId)
@@ -1347,6 +1351,7 @@ function TRS:UpdateRaidList()
                 level = UnitLevel(unitId)
                 subgroup = 1
                 isOnline = UnitIsConnected(unitId)
+                isLeader = UnitIsGroupLeader(unitId)
             end
         end
 
@@ -1357,7 +1362,8 @@ function TRS:UpdateRaidList()
                 level = level,
                 class = class,
                 classToken = classToken,
-                isOnline = isOnline
+                isOnline = isOnline,
+                isLeader = isLeader
             })
         end
     end
@@ -1435,6 +1441,14 @@ function TRS:UpdateRaidList()
                 nameText:SetJustifyH("LEFT")
                 nameText:SetWidth(100)
                 button.nameText = nameText
+
+                -- Leader icon (crown) - to the left of level
+                local leaderIcon = button:CreateTexture(nil, "OVERLAY")
+                leaderIcon:SetSize(12, 12)
+                leaderIcon:SetPoint("LEFT", nameText, "RIGHT", -7, 0)
+                leaderIcon:SetTexture("Interface\\GroupFrame\\UI-Group-LeaderIcon")
+                leaderIcon:Hide()
+                button.leaderIcon = leaderIcon
 
                 -- Level text (centered)
                 local levelText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1521,7 +1535,15 @@ function TRS:UpdateRaidList()
 
                 -- Set individual column texts
                 button.nameText:SetText(member.name)
-                               -- Check if this member is being summoned by anyone in activeSummons
+
+                -- Show/hide leader icon
+                if member.isLeader then
+                    button.leaderIcon:Show()
+                else
+                    button.leaderIcon:Hide()
+                end
+
+                -- Check if this member is being summoned by anyone in activeSummons
                 local isBeingSummoned = false
                 local summonerName = nil
 
@@ -1596,6 +1618,7 @@ function TRS:UpdateRaidList()
                 button.nameText:SetText("")
                 button.levelText:SetText("")
                 button.classText:SetText("")
+                button.leaderIcon:Hide()
                 button.unitId = nil
                 button.playerName = nil
                 button:SetScript("PreClick", nil)
