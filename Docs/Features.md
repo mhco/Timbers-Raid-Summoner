@@ -40,6 +40,10 @@ A comprehensive raid summon management addon for WoW Classic Era and Anniversary
 - "Summoning..." status is broadcast to all addon users in real-time
 - Players who join mid-summon will see the current summoning status
 
+### Soul Shard Count
+- Keep track of how many soul shards you have so you aren't caught off guard
+- A count in the top left corner of the addon window shows how many Soul Shards are in your bags
+
 ## Keyword Detection
 
 - Automatically detects summon requests in party and raid chat
