@@ -6,6 +6,7 @@
 ## Category: Timber's AddOns
 ## IconTexture: Interface\Icons\Spell_shadow_twilight
 ## SavedVariables: TimbersRaidSummonerDB
+## SavedVariablesPerCharacter: TimbersRaidSummonerCharDB
 
 # Embedded libraries
 Libs\LibStub\LibStub.lua

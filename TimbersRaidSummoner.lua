@@ -65,6 +65,13 @@ TimbersRaidSummonerDB = TimbersRaidSummonerDB or {
     minimap = {}
 }
 
+-- Per-character saved variables
+TimbersRaidSummonerCharDB = TimbersRaidSummonerCharDB or {
+    settings = {
+        raidListCollapsed = false
+    }
+}
+
 -- Local references
 local db
 local currentlySummoning = nil -- Track who we're currently summoning
@@ -86,6 +93,7 @@ TRS.summonQueueFrame = nil
 TRS.settingsFrame = nil
 TRS.settingsVisible = false
 TRS.toastFrame = nil
+TRS.raidListCollapsed = false
 
 -- StaticPopup for restoring default keywords
 StaticPopupDialogs["TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS"] = {
@@ -199,6 +207,13 @@ end
 -- Initialize the addon
 local function Initialize()
     db = TimbersRaidSummonerDB
+    TimbersRaidSummonerCharDB = TimbersRaidSummonerCharDB or { settings = { raidListCollapsed = false } }
+    if TimbersRaidSummonerCharDB.settings == nil then
+        TimbersRaidSummonerCharDB.settings = { raidListCollapsed = false }
+    end
+    if TimbersRaidSummonerCharDB.settings.raidListCollapsed == nil then
+        TimbersRaidSummonerCharDB.settings.raidListCollapsed = false
+    end
        -- Ensure new settings exist (for existing saved variables)
     if db.settings.sendSayMessage == nil then
         db.settings.sendSayMessage = false
@@ -225,7 +240,7 @@ local function Initialize()
     if db.settings.rangeOpacity == nil then
         db.settings.rangeOpacity = 0.5
     end
-       TRS:CreateMainFrame()
+    TRS:CreateMainFrame()
 
     -- Set up keybindings
     BINDING_HEADER_TIMBERSRAIDSUMMONER = "Timber's Raid Summoner"
@@ -530,6 +545,92 @@ function TRS:ShowToast(playerName)
     end)
 end
 
+-- Toggle raid members panel visibility (collapse/expand)
+function TRS:SetRaidListCollapsed(collapsed)
+    TRS.raidListCollapsed = collapsed and true or false
+
+    if TimbersRaidSummonerCharDB and TimbersRaidSummonerCharDB.settings then
+        TimbersRaidSummonerCharDB.settings.raidListCollapsed = TRS.raidListCollapsed
+    end
+
+    if TRS.raidListFrame then
+        if TRS.raidListFrame.header then
+            if TRS.raidListCollapsed then
+                TRS.raidListFrame.header:Hide()
+            else
+                TRS.raidListFrame.header:Show()
+            end
+        end
+        if TRS.raidListFrame.container then
+            if TRS.raidListCollapsed then
+                TRS.raidListFrame.container:Hide()
+            else
+                TRS.raidListFrame.container:Show()
+            end
+        end
+    end
+
+    if TRS.instructionText then
+        if TRS.raidListCollapsed then
+            TRS.instructionText:Hide()
+        else
+            TRS.instructionText:Show()
+        end
+    end
+
+    if TRS.collapseButton then
+        local iconPath = TRS.raidListCollapsed and "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down" or "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up"
+        TRS.collapseButton:SetNormalTexture(iconPath)
+    end
+
+    TRS:UpdateMainFrameLayout()
+end
+
+-- Update main frame size and column positions based on settings visibility and raid list collapse
+function TRS:UpdateMainFrameLayout()
+    if not TRS.mainFrame then return end
+
+    local topButtonYOffset = -13
+    local closeButtonYOffset = -5
+    if TRS.raidListCollapsed and not TRS.settingsVisible then
+        topButtonYOffset = topButtonYOffset - 26
+        closeButtonYOffset = closeButtonYOffset - 26
+    end
+
+    local baseWidth = TRS.raidListCollapsed and 260 or 725
+    if TRS.settingsVisible then
+        baseWidth = baseWidth + 396
+    end
+    TRS.mainFrame:SetSize(baseWidth, 602)
+
+    if TRS.collapseButton then
+        TRS.collapseButton:ClearAllPoints()
+        TRS.collapseButton:SetPoint("TOPRIGHT", TRS.mainFrame, "TOPRIGHT", -62, topButtonYOffset)
+    end
+    if TRS.gearButton then
+        TRS.gearButton:ClearAllPoints()
+        TRS.gearButton:SetPoint("TOPRIGHT", TRS.mainFrame, "TOPRIGHT", -40, topButtonYOffset)
+    end
+    if TRS.closeButton then
+        TRS.closeButton:ClearAllPoints()
+        TRS.closeButton:SetPoint("TOPRIGHT", TRS.mainFrame, "TOPRIGHT", -5, closeButtonYOffset)
+    end
+
+    if TRS.summonQueueFrame and TRS.summonQueueFrame.header and TRS.summonQueueFrame.container then
+        local queueX = TRS.raidListCollapsed and 20 or 477
+        TRS.summonQueueFrame.header:ClearAllPoints()
+        TRS.summonQueueFrame.header:SetPoint("TOPLEFT", TRS.mainFrame, "TOPLEFT", queueX, -70)
+        TRS.summonQueueFrame.container:ClearAllPoints()
+        TRS.summonQueueFrame.container:SetPoint("TOPLEFT", TRS.mainFrame, "TOPLEFT", queueX, -90)
+    end
+
+    if TRS.settingsFrame and TRS.settingsFrame.frame then
+        local settingsX = TRS.raidListCollapsed and 260 or 717
+        TRS.settingsFrame.frame:ClearAllPoints()
+        TRS.settingsFrame.frame:SetPoint("TOPLEFT", TRS.mainFrame, "TOPLEFT", settingsX, -70)
+    end
+end
+
 -- Create the main frame with three scrollable columns
 function TRS:CreateMainFrame()
     -- Main container frame (starts smaller, expands when settings shown)
@@ -653,6 +754,29 @@ function TRS:CreateMainFrame()
     title:SetText("Timber's Raid Summoner")
     title:SetTextColor(1, 0.82, 0, 1) -- Gold color
 
+    -- Collapse/expand button (raid members panel)
+    local collapseButton = CreateFrame("Button", nil, mainFrame)
+    collapseButton:SetSize(20, 20)
+    collapseButton:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -62, -13)
+    collapseButton:SetNormalTexture("Interface\\Buttons\\UI-Panel-CollapseButton-Up")
+    collapseButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+    collapseButton:SetScript("OnClick", function()
+        TRS:SetRaidListCollapsed(not TRS.raidListCollapsed)
+    end)
+    collapseButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        if TRS.raidListCollapsed then
+            GameTooltip:SetText("Expand Raid Members")
+        else
+            GameTooltip:SetText("Collapse Raid Members")
+        end
+        GameTooltip:Show()
+    end)
+    collapseButton:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    TRS.collapseButton = collapseButton
+
     -- Gear button (settings toggle)
     local gearButton = CreateFrame("Button", nil, mainFrame)
     gearButton:SetSize(20, 20)
@@ -670,6 +794,7 @@ function TRS:CreateMainFrame()
     gearButton:SetScript("OnLeave", function()
         GameTooltip:Hide()
     end)
+    TRS.gearButton = gearButton
 
     -- Info bar below title
     -- Soul Shard icon
@@ -687,10 +812,12 @@ function TRS:CreateMainFrame()
     local instructionText = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     instructionText:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -20, -40)
     instructionText:SetText("Left click to select, right click to summon, middle click to remove")
+    TRS.instructionText = instructionText
 
     -- Close button
     local closeButton = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
     closeButton:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -5, -5)
+    TRS.closeButton = closeButton
 
     -- Column 1: Raid Members List (360px wide, 400px tall)
     TRS:CreateRaidListColumn(mainFrame)
@@ -700,6 +827,13 @@ function TRS:CreateMainFrame()
 
     -- Column 3: Settings (360px wide, 400px tall) - hidden by default
     TRS:CreateSettingsColumn(mainFrame)
+
+    -- Ensure initial state matches saved per-character setting
+    local savedCollapsed = false
+    if TimbersRaidSummonerCharDB and TimbersRaidSummonerCharDB.settings then
+        savedCollapsed = TimbersRaidSummonerCharDB.settings.raidListCollapsed and true or false
+    end
+    TRS:SetRaidListCollapsed(savedCollapsed)
 end
 
 -- Column 1: Raid Members List
@@ -738,6 +872,8 @@ function TRS:CreateRaidListColumn(parent)
     scrollFrame:SetScrollChild(content)
 
     TRS.raidListFrame = {
+        header = header,
+        container = container,
         scrollFrame = scrollFrame,
         content = content,
         buttons = {}
@@ -782,6 +918,8 @@ function TRS:CreateSummonQueueColumn(parent)
     scrollFrame:SetScrollChild(content)
 
     TRS.summonQueueFrame = {
+        header = header,
+        container = container,
         scrollFrame = scrollFrame,
         content = content,
         buttons = {}
@@ -2207,13 +2345,13 @@ function TRS:ToggleSettings()
 
     if TRS.settingsVisible then
         -- Show settings, expand frame
-        TRS.mainFrame:SetSize(1121, 602) -- 20 + 447 + 10 + 230 + 10 + 385 + 10 = 1112
         TRS.settingsFrame.frame:Show()
     else
         -- Hide settings, shrink frame
-        TRS.mainFrame:SetSize(725, 602)
         TRS.settingsFrame.frame:Hide()
     end
+
+    TRS:UpdateMainFrameLayout()
 end
 
 -- Summon a player
