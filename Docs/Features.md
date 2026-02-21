@@ -1,8 +1,18 @@
-# Timber's Raid Summoner - Features
+# Timber's Raid Summoner
 
-A comprehensive raid summon management addon for WoW Classic Era and Anniversary Edition.
+A comprehensive raid summon management addon for WoW Classic Era and Anniversary Edition that provides an interface for easily selecting and coordinating summons of raid members. Summon via a list of raid members, or with the summoning queue. Many more features not seen elsewhere.
 
-## Main Interface
+To open, type "/trs" or "/timbersraidsummoner". You can also add a keybind for the addon in the "Options > Keybindings > AddOns" menu.
+
+Multiple settings can be managed by clicking the gear icon in the top right of the addon window.
+
+This addon communicates between characters in the same raid/party that also have the addon. In order to see in-progress summons and a decentralized summoning queue, one or more players will need the addon. The more people (especially warlocks) in your group with the addon, the more usefulness you'll get out of the addon.
+
+Characters in the summon queue have a timeout of 5 minutes. Once a character has been sitting in the queue for 5 minutes, all users with the addon will get a message about the user timing out, and the character will be removed from the queue. This prevents stale queues. If you want to manually remove a character from the queue, simply middle click their name. To summon a character in the queue, left click on the name in the queue to target the character, and then right click to begin casting the summon.
+
+TBC Compatible: This addon now works with TBC, and while addons can't directly interact with meeting stones, you can use the addon to manually target party/raid members and then right click on the meeting stone to begin the summon. The addon maintains warlock Ritual of Summoning functionality on TBC, as well.
+
+## Main Interface Features
 
 ### Raid Members Panel
 - Displays all members of your current raid or party group
