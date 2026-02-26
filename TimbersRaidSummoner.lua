@@ -94,6 +94,7 @@ TRS.settingsFrame = nil
 TRS.settingsVisible = false
 TRS.toastFrame = nil
 TRS.raidListCollapsed = false
+TRS.hasAddon = {}  -- Track which group members have the addon installed
 
 -- StaticPopup for restoring default keywords
 StaticPopupDialogs["TIMBERSRAIDSUMMONER_RESTORE_KEYWORDS"] = {
@@ -1462,6 +1463,7 @@ function TRS:UpdateRaidList()
         local unitId
         local isOnline = true
         local isLeader = false
+        local isAssistant = false
         if isRaid then
             local fileName, zone, online, isDead, role, isML
             name, rank, subgroup, level, class, fileName, zone, online, isDead, role, isML = GetRaidRosterInfo(i)
@@ -1469,6 +1471,7 @@ function TRS:UpdateRaidList()
             _, classToken = UnitClass(unitId)
             isOnline = UnitIsConnected(unitId)
             isLeader = (rank == 2)  -- rank 2 = leader
+            isAssistant = (rank == 1)  -- rank 1 = assistant
             -- Fallback to UnitLevel if GetRaidRosterInfo didn't provide it
             if not level or level == 0 then
                 level = UnitLevel(unitId)
@@ -1501,7 +1504,8 @@ function TRS:UpdateRaidList()
                 class = class,
                 classToken = classToken,
                 isOnline = isOnline,
-                isLeader = isLeader
+                isLeader = isLeader,
+                isAssistant = isAssistant
             })
         end
     end
@@ -1588,6 +1592,15 @@ function TRS:UpdateRaidList()
                 leaderIcon:Hide()
                 button.leaderIcon = leaderIcon
 
+                -- Addon presence dot (circular, shown when member has TRS installed)
+                local addonDot = button:CreateTexture(nil, "OVERLAY")
+                addonDot:SetSize(8, 8)
+                addonDot:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
+                addonDot:SetVertexColor(0.85, 0.35, 1.0)
+                addonDot:SetPoint("RIGHT", nameText, "RIGHT", 0, 0)
+                addonDot:Hide()
+                button.addonDot = addonDot
+
                 -- Level text (centered)
                 local levelText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
                 levelText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
@@ -1605,6 +1618,7 @@ function TRS:UpdateRaidList()
                 button:SetScript("OnEnter", function(self)
                     if self.unitId then
                         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                        if GameTooltip.TRSAddonDot then GameTooltip.TRSAddonDot:Hide() end
                         GameTooltip:SetText(self.playerName, 1, 1, 1)
                                                -- Show zone/location using C_Map for detailed subzone info
                         local zoneText = TRS:GetFormattedZoneForUnit(self.unitId, self.playerName)
@@ -1632,6 +1646,26 @@ function TRS:UpdateRaidList()
                             GameTooltip:AddLine(" ", 1, 1, 1)
                             local summonerText = "Being summoned by " .. self.summonerName
                             GameTooltip:AddLine(summonerText, 0, 1, 0)
+                        end
+                        -- Show addon indicator if this member has TRS installed
+                        if TRS.hasAddon[self.playerName] then
+                            GameTooltip:AddLine(" ", 1, 1, 1)
+                            -- Leading spaces reserve room for the dot texture
+                            GameTooltip:AddLine("    Has Addon Installed", 0.85, 0.35, 1.0)
+                            local lineNum = GameTooltip:NumLines()
+                            local lineFS = _G["GameTooltipTextLeft" .. lineNum]
+                            if lineFS then
+                                if not GameTooltip.TRSAddonDot then
+                                    local d = GameTooltip:CreateTexture(nil, "OVERLAY")
+                                    d:SetSize(10, 10)
+                                    d:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
+                                    d:SetVertexColor(0.85, 0.35, 1.0)
+                                    GameTooltip.TRSAddonDot = d
+                                end
+                                GameTooltip.TRSAddonDot:ClearAllPoints()
+                                GameTooltip.TRSAddonDot:SetPoint("LEFT", lineFS, "LEFT", 0, 0)
+                                GameTooltip.TRSAddonDot:Show()
+                            end
                         end
                                                GameTooltip:Show()
                     end
@@ -1674,8 +1708,23 @@ function TRS:UpdateRaidList()
                 -- Set individual column texts
                 button.nameText:SetText(member.name)
 
-                -- Show/hide leader icon
+                -- Show addon dot right after the name text if this member has TRS installed
+                if button.addonDot then
+                    if TRS.hasAddon[member.name] then
+                        button.addonDot:ClearAllPoints()
+                        button.addonDot:SetPoint("LEFT", button.nameText, "LEFT", button.nameText:GetStringWidth() + 3, 0)
+                        button.addonDot:Show()
+                    else
+                        button.addonDot:Hide()
+                    end
+                end
+
+                -- Show leader crown or assistant star, or hide if neither
                 if member.isLeader then
+                    button.leaderIcon:SetTexture("Interface\\GroupFrame\\UI-Group-LeaderIcon")
+                    button.leaderIcon:Show()
+                elseif member.isAssistant then
+                    button.leaderIcon:SetTexture("Interface\\GroupFrame\\UI-Group-AssistantIcon")
                     button.leaderIcon:Show()
                 else
                     button.leaderIcon:Hide()
@@ -1757,6 +1806,7 @@ function TRS:UpdateRaidList()
                 button.levelText:SetText("")
                 button.classText:SetText("")
                 button.leaderIcon:Hide()
+                if button.addonDot then button.addonDot:Hide() end
                 button.unitId = nil
                 button.playerName = nil
                 button:SetScript("PreClick", nil)
@@ -2586,6 +2636,15 @@ function TRS:RequestQueueSync()
     end
 end
 
+-- Broadcast addon presence so others can detect us
+function TRS:BroadcastHello()
+    if IsInRaid() then
+        SendAddonMessageCompat("TRS", "HELLO", "RAID")
+    elseif IsInGroup() then
+        SendAddonMessageCompat("TRS", "HELLO", "PARTY")
+    end
+end
+
 -- Send queue data to raid
 function TRS:SendQueueData(target)
     local db = TimbersRaidSummonerDB
@@ -2619,7 +2678,21 @@ function TRS:HandleAddonMessage(message, sender)
         return
     end
 
-    if message == "SYNC_REQUEST" then
+    if message == "HELLO" then
+        -- Sender has the addon; record them and reply so they know we have it too
+        TRS.hasAddon[senderName] = true
+        local channel = IsInRaid() and "RAID" or "PARTY"
+        SendAddonMessageCompat("TRS", "HELLO_ACK", channel)
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
+    elseif message == "HELLO_ACK" then
+        -- Sender confirmed they have the addon
+        TRS.hasAddon[senderName] = true
+        if TRS.mainFrame and TRS.mainFrame:IsShown() then
+            TRS:UpdateRaidList()
+        end
+    elseif message == "SYNC_REQUEST" then
         -- Someone requested queue sync, send our data
         TRS:SendQueueData()
     elseif string.match(message, "^SYNC_COUNT:") then
@@ -2829,10 +2902,13 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local loadedAddon = ...
         if loadedAddon == addonName then
             Initialize()
+            -- Mark the local player as having the addon
+            TRS.hasAddon[UnitName("player")] = true
             -- In Classic Era, addon message prefixes don't need to be registered
-            -- Request queue sync from raid after a short delay
+            -- Request queue sync and announce addon presence after a short delay
             C_Timer.After(2, function()
                 TRS:RequestQueueSync()
+                TRS:BroadcastHello()
             end)
         end
     elseif event == "RAID_ROSTER_UPDATE" or event == "GROUP_ROSTER_UPDATE" then
@@ -2845,6 +2921,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                     TRS:UpdateSummonQueue()
                 end
             end
+            -- Clear addon detection table (keep only self)
+            TRS.hasAddon = {}
+            TRS.hasAddon[UnitName("player")] = true
+        else
+            -- Announce our presence to any new members
+            TRS:BroadcastHello()
         end
 
         if TRS.mainFrame and TRS.mainFrame:IsShown() then
