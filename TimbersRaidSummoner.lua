@@ -1,4 +1,4 @@
--- Timber's Raid Summoner Addon for WoW Classic Era
+﻿-- Timber's Raid Summoner Addon for WoW Classic Era
 -- Main addon file
 
 local addonName = "TimbersRaidSummoner"
@@ -242,6 +242,11 @@ local function Initialize()
         db.settings.rangeOpacity = 0.5
     end
     TRS:CreateMainFrame()
+
+    -- Hide the addon dot whenever GameTooltip is cleared for non-addon use
+    GameTooltip:HookScript("OnTooltipCleared", function(self)
+        if self.TRSAddonDot then self.TRSAddonDot:Hide() end
+    end)
 
     -- Set up keybindings
     BINDING_HEADER_TIMBERSRAIDSUMMONER = "Timber's Raid Summoner"
@@ -1651,7 +1656,7 @@ function TRS:UpdateRaidList()
                         if TRS.hasAddon[self.playerName] then
                             GameTooltip:AddLine(" ", 1, 1, 1)
                             -- Leading spaces reserve room for the dot texture
-                            GameTooltip:AddLine("    Has Addon Installed", 0.85, 0.35, 1.0)
+                            GameTooltip:AddLine("    Has TRS Addon Installed", 0.85, 0.35, 1.0)
                             local lineNum = GameTooltip:NumLines()
                             local lineFS = _G["GameTooltipTextLeft" .. lineNum]
                             if lineFS then
