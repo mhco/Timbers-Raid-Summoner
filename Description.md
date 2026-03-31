@@ -10,7 +10,9 @@ This addon communicates between characters in the same raid/party that also have
 
 Characters in the summon queue have a timeout of 5 minutes. Once a character has been sitting in the queue for 5 minutes, all users with the addon will get a message about the user timing out, and the character will be removed from the queue. This prevents stale queues. If you want to manually remove a character from the queue, simply middle click their name. To summon a character in the queue, left click on the name in the queue to target the character, and then right click to begin casting the summon.
 
-TBC Compatible: This addon now works with TBC, and while addons can't directly interact with meeting stones, you can use the addon to manually target party/raid members and then right click on the meeting stone to begin the summon. The addon maintains warlock Ritual of Summoning functionality on TBC, as well.
+<span style="color: #2dc26b;">TBC Compatible:</span> This addon now works with TBC, and while addons can't directly interact with meeting stones, you can use the addon to manually target party/raid members and then right click on the meeting stone to begin the summon. The addon maintains warlock Ritual of Summoning functionality on TBC, as well.
+
+![image](https://media.forgecdn.net/attachments/description/1413838/description_3f867ef2-cf51-422f-babc-3d7b363bb9bc.png)
 
 ## Main Interface Features
 

@@ -1,5 +1,14 @@
 package-as: TimbersRaidSummoner
-enable-nolib-creation: no
 
 ignore:
-    - Docs
+    - Images
+    - Screenshots
+    - Description.md
+    - README.md
+
+move-folders:
+    TimbersRaidSummoner/Src: TimbersRaidSummoner
+
+manual-changelog:
+    filename: CHANGELOG.md
+    markup-type: markdown

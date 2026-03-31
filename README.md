@@ -1,4 +1,9 @@
-Raid Summoner
+# Timber's Raid Summoner
+
+A World of Warcraft Classic TBC Anniversary (20505) addon that provides a comprehensive and feature-packed interface used for summoning entire raids or parties. Born from a need to organize summon requests and raid members running to the instance portal on my summoning alt, I created an addon so powerful that it's the only addon you need as a level 20 warlock when it comes to summoning.
+
+## Features
+
 - List of all characters in the current raid group
 - List of summon requests (in chronological order received) in a side panel to the main summoning interface
     - Option to play a sound when someone is added to the list
@@ -26,3 +31,17 @@ Raid Summoner
 - (Optional) Shares summon request list with others in your raid that also have the addon
     - Whenever you join a group, automatically request the updated list from others in the raid/party
     - Removes characters from the shared list the instant you click on the button
+
+## Minimap Button
+
+Left-clicking toggles the addon's summoning interface.
+
+Right-clicking brings up a menu that allows you to select from the following options:
+
+- Show summoning interface
+- Hide minimap button
+
+## Slash commands
+
+```/trs``` - Opens addon's summoning interface
+```/trs minimap``` - Toggles minimap button visibility
