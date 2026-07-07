@@ -1,0 +1,18 @@
+name: Timber's Raid Summoner
+summary: Provides an interface for easily selecting and coordinating summons of raid members. Summon via a list of raid members, or with the summoning queue. Many more features not seen elsewhere.
+logo: Images/logo-large.png
+icon: Images/icon.png
+license: gpl-3.0-only
+curseforge:
+    project_id: "1413838"
+    project_name: Timber's Raid Summoner
+    slug: timbers-raid-summoner
+    logo: Images/logo-large.png
+    summary: Provides an interface for easily selecting and coordinating summons of raid members. Summon via a list of raid members, or with the summoning queue. Many more features not seen elsewhere.
+    main_category: Warlock
+    additional_categories:
+        - Raid Frames
+    allow_comments: true
+    project_distribution: allow
+    source_code: github
+    automatic_packaging: tagged-commits
