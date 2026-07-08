@@ -1,6 +1,0 @@
-package-as: TimbersRaidSummoner
-enable-nolib-creation: no
-
-ignore:
-    - Dev
-    - Docs

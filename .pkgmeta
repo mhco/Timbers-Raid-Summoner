@@ -1,14 +1,14 @@
 package-as: TimbersRaidSummoner
 
 ignore:
-    - Dev
+    - TimbersRaidSummoner/Dev
     - Images
     - Screenshots
     - Description.md
     - README.md
 
 move-folders:
-    TimbersRaidSummoner/Src: TimbersRaidSummoner
+    TimbersRaidSummoner/TimbersRaidSummoner: TimbersRaidSummoner
 
 manual-changelog:
     filename: CHANGELOG.md
