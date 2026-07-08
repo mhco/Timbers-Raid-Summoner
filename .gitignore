@@ -1,2 +1,6 @@
+# General
 *.zip
 *.tar.gz
+
+# CurseForge / packager build output
+.releases/
