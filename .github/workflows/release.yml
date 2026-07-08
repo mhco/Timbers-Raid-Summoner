@@ -1,0 +1,31 @@
+# Managed by Warcraft Addon Manager. Edits may be overwritten.
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package and create GitHub release
+        uses: BigWigsMods/packager@v2
+        env:
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+      - name: Restore pre-release title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            *-alpha*) TITLE="🛑 Alpha Build ($TAG)"; PRE=true ;;
+            *-beta*)  TITLE="⚠️ Beta Test Build ($TAG)"; PRE=true ;;
+            *)        TITLE="$TAG"; PRE=false ;;
+          esac
+          gh release edit "$TAG" --title "$TITLE" --prerelease=$PRE

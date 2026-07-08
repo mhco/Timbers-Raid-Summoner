@@ -1,5 +1,17 @@
 # Changelog
 
+## v2026.07.07 (2026-07-08)
+
+- Fixed pkgmeta paths after the Src rename so packaging doesn't double-nest the addon, removed the stale nested pkgmeta
+- Added dev LUA folder to pkgmeta ignore so users won't get development code
+- Updated gitignore, removed gitkeep from ".releases" folder, because that folder doesn't need to be under source control
+- Renamed "Src" to "TimbersRaidSummoner" to alllow easier packaging, added testmode functionality for development purposes
+- Updated TOC version to 20506
+- Added project.yml file
+- Added metadata doc file
+- Moved files to align with desired file structure
+
+
 All notable changes to this project will be documented in this file.
 
 ## [v2026.03.31] - 2026-03-31
