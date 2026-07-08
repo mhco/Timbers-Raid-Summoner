@@ -5,13 +5,12 @@
 ## Version: v2026.07.07
 ## SavedVariables: TimbersRaidSummonerDB
 ## SavedVariablesPerCharacter: TimbersRaidSummonerCharDB
-## X-License: gpl-3.0-only
-## X-Curse-Project-ID: 1413838
-## IconTexture: Interface\Icons\Spell_shadow_twilight
 ## Category: Timber's AddOns
+## IconTexture: Interface/Icons/Spell_shadow_twilight
 
+Libs/LibStub/LibStub.lua
 Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua
 Libs/LibDataBroker-1.1/LibDataBroker-1.1.lua
 Libs/LibDBIcon-1.0/LibDBIcon-1.0.lua
-Libs/LibStub/LibStub.lua
 TimbersRaidSummoner.lua
+Dev/TestMode.lua

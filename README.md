@@ -43,5 +43,5 @@ Right-clicking brings up a menu that allows you to select from the following opt
 
 ## Slash commands
 
-```/trs``` - Opens addon's summoning interface
+```/trs``` or ```/timbersraidsummoner``` - Opens addon's summoning interface
 ```/trs minimap``` - Toggles minimap button visibility

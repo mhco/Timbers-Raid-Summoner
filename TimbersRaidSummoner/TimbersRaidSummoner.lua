@@ -1515,6 +1515,11 @@ function TRS:UpdateRaidList()
         end
     end
 
+    -- TestMode hook: augment group data with fake members
+    if TRS.TestMode and TRS.TestMode.active and TRS.TestMode.AugmentGroups then
+        TRS.TestMode:AugmentGroups(groups)
+    end
+
     -- Layout constants
     local buttonHeight = 20
     local headerHeight = 18
@@ -1579,6 +1584,14 @@ function TRS:UpdateRaidList()
                         summonFromQueue = false
                         TRS:UpdateSummoningStateUI(self.playerName, true, UnitName("player"))
                         TRS:BroadcastSummoningState(self.playerName, true)
+                    elseif btn == "LeftButton" and self.isFake and self.playerName
+                            and TRS.TestMode and TRS.TestMode.active then
+                        if currentlySummoning and currentlySummoning ~= self.playerName then
+                            TRS:ClearSummoningState(currentlySummoning)
+                        end
+                        currentlySummoning = self.playerName
+                        summonFromQueue = false
+                        TRS:UpdateSummoningStateUI(self.playerName, true, UnitName("player"))
                     end
                 end)
 
@@ -1621,30 +1634,32 @@ function TRS:UpdateRaidList()
                 button.classText = classText
                                -- Add tooltip handlers
                 button:SetScript("OnEnter", function(self)
-                    if self.unitId then
+                    if self.unitId or self.isFake then
                         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                         if GameTooltip.TRSAddonDot then GameTooltip.TRSAddonDot:Hide() end
                         GameTooltip:SetText(self.playerName, 1, 1, 1)
+                        if self.unitId then
                                                -- Show zone/location using C_Map for detailed subzone info
-                        local zoneText = TRS:GetFormattedZoneForUnit(self.unitId, self.playerName)
-                        if zoneText then
-                            GameTooltip:AddLine(zoneText, 0.8, 0.8, 0.8)
-                        elseif IsInRaid() then
-                            -- Fallback to raid roster info if C_Map didn't work
-                            local numMembers = GetNumGroupMembers()
-                            for i = 1, numMembers do
-                                local name, _, _, _, _, _, zone = GetRaidRosterInfo(i)
-                                if name == self.playerName then
-                                    if zone and zone ~= "" then
-                                        GameTooltip:AddLine(zone, 0.8, 0.8, 0.8)
-                                    else
-                                        GameTooltip:AddLine("Zone: Unknown", 0.6, 0.6, 0.6)
+                            local zoneText = TRS:GetFormattedZoneForUnit(self.unitId, self.playerName)
+                            if zoneText then
+                                GameTooltip:AddLine(zoneText, 0.8, 0.8, 0.8)
+                            elseif IsInRaid() then
+                                -- Fallback to raid roster info if C_Map didn't work
+                                local numMembers = GetNumGroupMembers()
+                                for i = 1, numMembers do
+                                    local name, _, _, _, _, _, zone = GetRaidRosterInfo(i)
+                                    if name == self.playerName then
+                                        if zone and zone ~= "" then
+                                            GameTooltip:AddLine(zone, 0.8, 0.8, 0.8)
+                                        else
+                                            GameTooltip:AddLine("Zone: Unknown", 0.6, 0.6, 0.6)
+                                        end
+                                        break
                                     end
-                                    break
                                 end
+                            else
+                                GameTooltip:AddLine("Zone: Unknown", 0.6, 0.6, 0.6)
                             end
-                        else
-                            GameTooltip:AddLine("Zone: Unknown", 0.6, 0.6, 0.6)
                         end
                                                -- Show who is summoning them if applicable
                         if self.summonerName then
@@ -1696,6 +1711,7 @@ function TRS:UpdateRaidList()
                 button.storedClass = member.class
                 button.storedClassToken = member.classToken
                 button.storedIsOnline = member.isOnline
+                button.isFake = member.isFake
                 button.originalLevel = tostring(member.level or 0)  -- For RefreshRaidListVisuals
 
                 -- Set unit attribute and click behaviors
@@ -1795,7 +1811,7 @@ function TRS:UpdateRaidList()
                 button.nameText:SetTextColor(r, g, b)
 
                 -- Set opacity based on range (if enabled)
-                if UnitInRange(member.unitId) then
+                if (member.inRange ~= nil and member.inRange) or (member.unitId and UnitInRange(member.unitId)) then
                     button:SetAlpha(1.0)
                 else
                     local dimAlpha = db.settings.rangeOpacity or 0.8
@@ -1841,7 +1857,8 @@ function TRS:UpdateSummonQueue()
     local yOffset = 0
     local buttonHeight = 30
 
-    for i, entry in ipairs(db.summonQueue) do
+    local _displayQueue = (TRS.TestMode and TRS.TestMode.active and TRS.TestMode.GetDisplayQueue) and TRS.TestMode:GetDisplayQueue() or db.summonQueue
+    for i, entry in ipairs(_displayQueue) do
         local button = buttons[i]
         if not button then
             button = CreateFrame("Button", "TRSQueueButton"..i, content, "SecureUnitButtonTemplate")
@@ -2114,6 +2131,11 @@ function TRS:UpdateSummonQueue()
             end
         end
 
+        -- Use data embedded in entry as fallback (supports test mode fake entries)
+        classToken = classToken or entry.classToken
+        level      = level      or entry.level
+        class      = class      or entry.class
+
         -- Store the level, class, and classToken on the button for later restoration
         button.storedLevel = level
         button.storedClass = class
@@ -2181,6 +2203,15 @@ function TRS:UpdateSummonQueue()
         -- Name always gets class color
         local r, g, b = TRS:GetClassColor(classToken)
         button.nameText:SetTextColor(r, g, b)
+
+        -- Dim out-of-range entries (used by test mode fake entries)
+        if entry.inRange == false then
+            local dimAlpha = db.settings.rangeOpacity or 0.5
+            if dimAlpha < 0.1 then dimAlpha = 0.1 end
+            button:SetAlpha(dimAlpha)
+        else
+            button:SetAlpha(1.0)
+        end
 
         button:Show()
 
@@ -2444,7 +2475,11 @@ SlashCmdList["TIMBERSRAIDSUMMONER"] = function(msg)
     if TRS.HandleMinimapSlash and TRS:HandleMinimapSlash(input) then
         return
     end
-       -- Default behavior: toggle frame
+       -- Check for test mode commands
+    if TRS.TestMode and TRS.TestMode.HandleSlash and TRS.TestMode:HandleSlash(input) then
+        return
+    end
+    -- Default behavior: toggle frame
     TRS:ToggleFrame()
 end
 
