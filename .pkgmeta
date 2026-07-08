@@ -1,6 +1,7 @@
 package-as: TimbersRaidSummoner
 
 ignore:
+    - Dev
     - Images
     - Screenshots
     - Description.md
